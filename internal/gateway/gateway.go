@@ -39,6 +39,7 @@ func (g *Gateway) SetupRoutes() http.Handler {
 	// AI API 端点
 	r.Post("/v1/messages", g.handleMessages)
 	r.Post("/v1/chat/completions", g.handleChatCompletions)
+	r.Post("/v1/responses", g.handleResponses)
 	r.Get("/v1/models", g.handleModels)
 
 	// Admin 端点（路径隔离）
