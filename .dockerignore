@@ -1,0 +1,31 @@
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OMC
+.omc/
+
+# Build artifacts
+turapis
+*.exe
+*.test
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*

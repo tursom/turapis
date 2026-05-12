@@ -1,0 +1,19 @@
+services:
+  turapis:
+    build: .
+    container_name: turapis
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - turapis-data:/data
+    environment:
+      - TZ=Asia/Shanghai
+    command:
+      - "-addr"
+      - ":8080"
+      - "-db"
+      - "/data/turapis.db"
+
+volumes:
+  turapis-data:
