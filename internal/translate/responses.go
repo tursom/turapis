@@ -172,7 +172,7 @@ func ResponsesResponseFromUnified(resp *models.UnifiedResponse) *ResponsesResp {
 
 // --- SSE 流式事件类型 ---
 
-// ResponsesSSEDelta response.output_text.delta 事件
+// ResponsesSSEDelta response.text.delta 事件
 type ResponsesSSEDelta struct {
 	Delta string `json:"delta"`
 }
@@ -185,14 +185,20 @@ type ResponsesSSECompleted struct {
 		Usage struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
 		} `json:"usage"`
 	} `json:"response"`
 }
 
 // ResponsesStreamEventToUnified 将 Responses SSE 原始事件转为 UnifiedStreamEvent
+// 真实 SSE 事件类型参考: https://github.com/openai/openai-node
 func ResponsesStreamEventToUnified(eventType string, data []byte) (*models.UnifiedStreamEvent, error) {
 	switch eventType {
-	case "response.output_text.delta":
+	case "response.created",
+		"response.in_progress":
+		return nil, nil // 生命周期事件，忽略
+
+	case "response.text.delta":
 		var d ResponsesSSEDelta
 		if err := json.Unmarshal(data, &d); err != nil {
 			return nil, err
@@ -205,11 +211,25 @@ func ResponsesStreamEventToUnified(eventType string, data []byte) (*models.Unifi
 		}
 		return nil, nil
 
+	case "response.text.done",
+		"response.content_part.done",
+		"response.output_item.done":
+		return nil, nil // 中间完成事件，忽略
+
 	case "response.completed":
 		return &models.UnifiedStreamEvent{Type: models.StreamEventStop}, nil
 
-	case "response.output_text.done":
-		return nil, nil
+	case "response.failed",
+		"response.incomplete":
+		var errBody struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &errBody); err == nil && errBody.Error.Message != "" {
+			return &models.UnifiedStreamEvent{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: %s", errBody.Error.Message)}, nil
+		}
+		return &models.UnifiedStreamEvent{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: %s", eventType)}, nil
 
 	case "error":
 		var errBody struct {

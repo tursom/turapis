@@ -58,6 +58,10 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// 发送初始生命周期事件
+	writeSSEEvent(w, flusher, "response.created", `{"response":{"id":"resp_turapis","status":"in_progress"}}`)
+	writeSSEEvent(w, flusher, "response.in_progress", `{}`)
+
 	for event := range events {
 		select {
 		case <-r.Context().Done():
@@ -67,35 +71,26 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 
 		switch event.Type {
 		case models.StreamEventDelta:
-			writeSSELine(w, "event: response.output_text.delta")
-			writeSSELine(w, "data: "+mustMarshal(map[string]string{"delta": event.Content}))
-			writeSSELine(w, "")
-			flusher.Flush()
+			writeSSEEvent(w, flusher, "response.text.delta", `{"delta":`+mustMarshal(event.Content)+`}`)
 		case models.StreamEventStop:
-			writeSSELine(w, "event: response.completed")
-			writeSSELine(w, "data: {\"response\":{}}")
-			writeSSELine(w, "")
-			flusher.Flush()
+			writeSSEEvent(w, flusher, "response.text.done", `{}`)
+			writeSSEEvent(w, flusher, "response.output_item.done", `{}`)
+			writeSSEEvent(w, flusher, "response.completed", `{"response":{}}`)
 			return
 		case models.StreamEventError:
-			writeSSELine(w, "event: error")
-			writeSSELine(w, "data: {\"error\":{\"message\":\""+escapeJSON(event.Error.Error())+"\"}}")
-			writeSSELine(w, "")
-			flusher.Flush()
+			writeSSEEvent(w, flusher, "error", `{"error":{"message":`+mustMarshal(event.Error.Error())+`}}`)
 			return
 		}
 	}
 }
 
+func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event, data string) {
+	w.Write([]byte("event: " + event + "\n"))
+	w.Write([]byte("data: " + data + "\n\n"))
+	flusher.Flush()
+}
+
 func mustMarshal(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
-}
-
-func writeSSELine(w http.ResponseWriter, s string) {
-	if s == "" {
-		w.Write([]byte("\n"))
-	} else {
-		w.Write([]byte(s + "\n"))
-	}
 }
