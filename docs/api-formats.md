@@ -677,7 +677,7 @@ HTTP 200
 | FormatError | JSON 解析失败 | ✅ | 格式错误 |
 | ModelUnavailable | 404 + body 含 "model" | ✅ | 模型不可用 |
 | Unknown | 其他 | ✅ | 未知错误 |
-| AuthError | 401, 403 | ❌ | 鉴权失败（不转移） |
+| AuthError | 401, 403 | ✅ | 鉴权失败（如 key 过期/被吊销，转移后可用备用 key） |
 
 流式请求：连接建立前按非流式逻辑重试；数据开始发送后任何错误直接断开，不重试。
 

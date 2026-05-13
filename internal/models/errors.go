@@ -115,8 +115,6 @@ func isTimeout(err error) bool {
 // ShouldFailover 判断该错误是否应触发故障转移
 func ShouldFailover(cat ErrorCategory) bool {
 	switch cat {
-	case CategoryAuthError:
-		return false
 	case CategoryTimeout,
 		CategoryRateLimit,
 		CategoryQuotaExhausted,
@@ -124,6 +122,7 @@ func ShouldFailover(cat ErrorCategory) bool {
 		CategoryEmptyResponse,
 		CategoryFormatError,
 		CategoryModelUnavailable,
+		CategoryAuthError,
 		CategoryUnknown:
 		return true
 	default:
