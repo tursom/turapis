@@ -39,8 +39,16 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	result, err := g.router.Route(r.Context(), unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/responses", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
+	}
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(result.UsedProvider)
+		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
 	}
 
 	resp := translate.ResponsesResponseFromUnified(result.Response)
@@ -49,11 +57,18 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	events, err := g.router.RouteStream(r.Context(), unified)
+	streamResult, err := g.router.RouteStream(r.Context(), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/responses", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
+	}
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(streamResult.ProviderName)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -70,7 +85,7 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 	writeSSEEvent(w, flusher, "response.created", `{"response":{"id":"resp_turapis","status":"in_progress"}}`)
 	writeSSEEvent(w, flusher, "response.in_progress", `{}`)
 
-	for event := range events {
+	for event := range streamResult.Events {
 		select {
 		case <-r.Context().Done():
 			return
@@ -78,6 +93,12 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		}
 
 		switch event.Type {
+		case models.StreamEventUsage:
+			if event.Usage != nil {
+				if c := collectorFromContext(r.Context()); c != nil {
+					c.SetTokens(event.Usage.InputTokens, event.Usage.OutputTokens)
+				}
+			}
 		case models.StreamEventDelta:
 			writeSSEEvent(w, flusher, "response.text.delta", `{"delta":`+mustMarshal(event.Content)+`}`)
 		case models.StreamEventStop:

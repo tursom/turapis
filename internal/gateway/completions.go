@@ -42,8 +42,16 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	result, err := g.router.Route(r.Context(), unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/chat/completions", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
+	}
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(result.UsedProvider)
+		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
 	}
 
 	// 转回 OpenAI 格式
@@ -53,14 +61,33 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (g *Gateway) handleStreamCompletions(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	events, err := g.router.RouteStream(r.Context(), unified)
+	streamResult, err := g.router.RouteStream(r.Context(), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/chat/completions", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
 	}
-
-	if err := sse.StreamEvents(w, r, events); err != nil {
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(streamResult.ProviderName)
+	}
+	filtered := make(chan models.UnifiedStreamEvent, 8)
+	go func() {
+		defer close(filtered)
+		for ev := range streamResult.Events {
+			if ev.Type == models.StreamEventUsage {
+				if c := collectorFromContext(r.Context()); c != nil && ev.Usage != nil {
+					c.SetTokens(ev.Usage.InputTokens, ev.Usage.OutputTokens)
+				}
+				continue
+			}
+			filtered <- ev
+		}
+	}()
+	if err := sse.StreamEvents(w, r, filtered); err != nil {
 		slog.Error("stream_events_failed", "error", err)
 	}
 }

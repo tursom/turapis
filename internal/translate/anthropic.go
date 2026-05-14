@@ -192,8 +192,8 @@ func AnthropicResponseFromUnified(resp *models.UnifiedResponse) *AnthropicResp {
 	}
 }
 
-// AnthropicStreamEventToUnified 将 Anthropic SSE 原始事件转为 UnifiedStreamEvent
-func AnthropicStreamEventToUnified(eventType string, data []byte) (*models.UnifiedStreamEvent, error) {
+// AnthropicStreamEventToUnified 将 Anthropic SSE 原始事件转为 UnifiedStreamEvent 切片
+func AnthropicStreamEventToUnified(eventType string, data []byte) ([]*models.UnifiedStreamEvent, error) {
 	switch eventType {
 	case "content_block_delta":
 		var delta AnthropicSSEDelta
@@ -201,10 +201,10 @@ func AnthropicStreamEventToUnified(eventType string, data []byte) (*models.Unifi
 			return nil, err
 		}
 		if delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
-			return &models.UnifiedStreamEvent{
+			return []*models.UnifiedStreamEvent{{
 				Type:    models.StreamEventDelta,
 				Content: delta.Delta.Text,
-			}, nil
+			}}, nil
 		}
 		return nil, nil // 非文本 delta 忽略
 
@@ -216,20 +216,30 @@ func AnthropicStreamEventToUnified(eventType string, data []byte) (*models.Unifi
 			Delta struct {
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
+			Usage *struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal(data, &msgDelta); err != nil {
 			return nil, err
 		}
+		var events []*models.UnifiedStreamEvent
 		if msgDelta.Delta.StopReason != "" {
-			return &models.UnifiedStreamEvent{
+			events = append(events, &models.UnifiedStreamEvent{
 				Type:       models.StreamEventDelta,
 				StopReason: mapAnthropicStopReason(msgDelta.Delta.StopReason),
-			}, nil
+			})
 		}
-		return nil, nil
+		if msgDelta.Usage != nil && msgDelta.Usage.OutputTokens > 0 {
+			events = append(events, &models.UnifiedStreamEvent{
+				Type:  models.StreamEventUsage,
+				Usage: &models.UnifiedUsage{OutputTokens: msgDelta.Usage.OutputTokens},
+			})
+		}
+		return events, nil
 
 	case "message_stop":
-		return &models.UnifiedStreamEvent{Type: models.StreamEventStop}, nil
+		return []*models.UnifiedStreamEvent{{Type: models.StreamEventStop}}, nil
 
 	case "error":
 		var errBody struct {
@@ -238,9 +248,9 @@ func AnthropicStreamEventToUnified(eventType string, data []byte) (*models.Unifi
 			} `json:"error"`
 		}
 		if err := json.Unmarshal(data, &errBody); err != nil {
-			return &models.UnifiedStreamEvent{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: unknown")}, nil
+			return []*models.UnifiedStreamEvent{{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: unknown")}}, nil
 		}
-		return &models.UnifiedStreamEvent{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: %s", errBody.Error.Message)}, nil
+		return []*models.UnifiedStreamEvent{{Type: models.StreamEventError, Error: fmt.Errorf("upstream error: %s", errBody.Error.Message)}}, nil
 
 	default:
 		return nil, nil

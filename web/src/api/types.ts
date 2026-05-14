@@ -73,6 +73,31 @@ export interface ServiceStatus {
   providers: ProviderStatus[]
 }
 
+export interface AccessLog {
+  id: number
+  timestamp: string
+  api_key_id: number | null
+  api_key_name: string
+  method: string
+  path: string
+  model: string
+  status_code: number
+  tokens_in: number
+  tokens_out: number
+  duration_ms: number
+  remote_ip: string
+  request_id: string
+  provider_name: string
+  error_msg: string
+}
+
+export interface AccessLogResponse {
+  logs: AccessLog[]
+  total: number
+  page: number
+  per_page: number
+}
+
 export interface DiscoverResult {
   provider: string
   models: { id: number; model_id: string; model_name: string }[]

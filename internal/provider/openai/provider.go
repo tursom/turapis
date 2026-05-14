@@ -144,6 +144,20 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.U
 					return
 				}
 			}
+
+			if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+				select {
+				case ch <- models.UnifiedStreamEvent{
+					Type: models.StreamEventUsage,
+					Usage: &models.UnifiedUsage{
+						InputTokens:  chunk.Usage.PromptTokens,
+						OutputTokens: chunk.Usage.CompletionTokens,
+					},
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 
 		// 发送结束事件（如果正常读完流）
@@ -260,6 +274,10 @@ type chatCompletionStreamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 type modelsListResponse struct {

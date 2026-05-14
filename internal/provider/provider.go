@@ -22,12 +22,14 @@ var sharedTransport = &http.Transport{
 
 func dialIPv4First(ctx context.Context, network, addr string) (net.Conn, error) {
 	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	// 强制仅 IPv4，避免 IPv6 超时
 	if host, port, err := net.SplitHostPort(addr); err == nil {
 		if ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host); err == nil && len(ips) > 0 {
 			return d.DialContext(ctx, "tcp4", net.JoinHostPort(ips[0].String(), port))
 		}
 	}
-	return d.DialContext(ctx, network, addr)
+	// fallback：仍然用 tcp4，不碰 IPv6
+	return d.DialContext(ctx, "tcp4", addr)
 }
 
 // SharedTransport 返回全局共享的 HTTP Transport（供各 Provider 使用）

@@ -6,6 +6,7 @@ import Routing from './pages/Routing'
 import Dashboard from './pages/Dashboard'
 import ApiKeys from './pages/ApiKeys'
 import Sites from './pages/Sites'
+import AccessLogs from './pages/AccessLogs'
 
 function ProtectedLayout() {
   const { isAuthenticated, isLoading, logout } = useAuth()
@@ -38,6 +39,7 @@ function ProtectedLayout() {
         <NavLink to="/routing" style={linkStyle}>路由配置</NavLink>
         <NavLink to="/api-keys" style={linkStyle}>API Key 管理</NavLink>
         <NavLink to="/sites" style={linkStyle}>站点管理</NavLink>
+        <NavLink to="/access-logs" style={linkStyle}>访问日志</NavLink>
         <div style={{ marginTop: 24 }}>
           <button onClick={logout} style={{ width: '100%', padding: '8px 0', background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, cursor: 'pointer' }}>退出登录</button>
         </div>
@@ -62,6 +64,7 @@ export default function App() {
             <Route path="/routing" element={<Routing />} />
             <Route path="/api-keys" element={<ApiKeys />} />
             <Route path="/sites" element={<Sites />} />
+            <Route path="/access-logs" element={<AccessLogs />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

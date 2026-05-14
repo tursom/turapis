@@ -40,6 +40,7 @@ type StreamEventType string
 const (
 	StreamEventDelta StreamEventType = "content_block_delta"
 	StreamEventStop  StreamEventType = "message_stop"
+	StreamEventUsage StreamEventType = "usage"
 	StreamEventError StreamEventType = "error"
 )
 
@@ -48,6 +49,7 @@ type UnifiedStreamEvent struct {
 	Type       StreamEventType `json:"type"`
 	Content    string          `json:"content,omitempty"`
 	StopReason string          `json:"stop_reason,omitempty"`
+	Usage      *UnifiedUsage   `json:"usage,omitempty"`
 	Error      error           `json:"-"`
 }
 

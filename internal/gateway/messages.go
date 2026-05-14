@@ -43,8 +43,16 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	result, err := g.router.Route(context.Background(), unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/messages", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"type":"api_error","message":"`+err.Error()+`"}}`, http.StatusInternalServerError)
 		return
+	}
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(result.UsedProvider)
+		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
 	}
 
 	// 转回 Anthropic 格式
@@ -54,11 +62,18 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	events, err := g.router.RouteStream(context.Background(), unified)
+	streamResult, err := g.router.RouteStream(context.Background(), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/messages", "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
 		http.Error(w, `{"error":{"type":"api_error","message":"`+err.Error()+`"}}`, http.StatusInternalServerError)
 		return
+	}
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(unified.Model)
+		c.SetProvider(streamResult.ProviderName)
 	}
 
 	// 流式输出 Anthropic SSE 格式
@@ -79,7 +94,7 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 	flusher.Flush()
 
 	blockStarted := false
-	for event := range events {
+	for event := range streamResult.Events {
 		select {
 		case <-r.Context().Done():
 			return

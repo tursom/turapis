@@ -115,7 +115,7 @@ func (p *AnthropicProvider) ChatCompletionStream(ctx context.Context, req *model
 					if text == "" {
 						if len(dataLines) > 0 {
 							data := bytes.Join(dataLines, []byte("\n"))
-							ev, err := translate.AnthropicStreamEventToUnified(eventType, data)
+							evs, err := translate.AnthropicStreamEventToUnified(eventType, data)
 							if err != nil {
 								select {
 								case ch <- models.UnifiedStreamEvent{Type: models.StreamEventError, Error: err}:
@@ -123,11 +123,13 @@ func (p *AnthropicProvider) ChatCompletionStream(ctx context.Context, req *model
 								}
 								return
 							}
-							if ev != nil {
-								select {
-								case ch <- *ev:
-								case <-ctx.Done():
-									return
+							for _, ev := range evs {
+								if ev != nil {
+									select {
+									case ch <- *ev:
+									case <-ctx.Done():
+										return
+									}
 								}
 							}
 						}

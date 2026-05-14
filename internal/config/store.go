@@ -1,11 +1,14 @@
 package config
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -166,6 +169,26 @@ func initSchema(db *sqlx.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_site_models_site_id ON site_models(site_id);
 	CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id ON provider_models(provider_id);
+
+	CREATE TABLE IF NOT EXISTS access_logs (
+	    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	    timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
+	    api_key_id    INTEGER DEFAULT NULL,
+	    api_key_name  TEXT NOT NULL DEFAULT '',
+	    method        TEXT NOT NULL,
+	    path          TEXT NOT NULL,
+	    model         TEXT NOT NULL DEFAULT '',
+	    status_code   INTEGER NOT NULL DEFAULT 0,
+	    tokens_in     INTEGER NOT NULL DEFAULT 0,
+	    tokens_out    INTEGER NOT NULL DEFAULT 0,
+	    duration_ms   INTEGER NOT NULL DEFAULT 0,
+	    remote_ip     TEXT NOT NULL DEFAULT '',
+	    request_id    TEXT NOT NULL DEFAULT '',
+	    provider_name TEXT NOT NULL DEFAULT '',
+	    error_msg     TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_access_logs_timestamp ON access_logs(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_id ON access_logs(api_key_id);
 	`
 	_, err := db.Exec(schema)
 	return err
@@ -816,6 +839,152 @@ func (s *Store) SeedBuiltinSites() error {
 	}
 
 	return nil
+}
+
+// --- Access Logs ---
+
+// AccessLog API 访问日志
+type AccessLog struct {
+	ID           int    `db:"id" json:"id"`
+	Timestamp    string `db:"timestamp" json:"timestamp"`
+	ApiKeyID     *int   `db:"api_key_id" json:"api_key_id"`
+	ApiKeyName   string `db:"api_key_name" json:"api_key_name"`
+	Method       string `db:"method" json:"method"`
+	Path         string `db:"path" json:"path"`
+	Model        string `db:"model" json:"model"`
+	StatusCode   int    `db:"status_code" json:"status_code"`
+	TokensIn     int    `db:"tokens_in" json:"tokens_in"`
+	TokensOut    int    `db:"tokens_out" json:"tokens_out"`
+	DurationMs   int    `db:"duration_ms" json:"duration_ms"`
+	RemoteIP     string `db:"remote_ip" json:"remote_ip"`
+	RequestID    string `db:"request_id" json:"request_id"`
+	ProviderName string `db:"provider_name" json:"provider_name"`
+	ErrorMsg     string `db:"error_msg" json:"error_msg"`
+}
+
+// AccessLogQuery 访问日志查询参数
+type AccessLogQuery struct {
+	ApiKeyID *int   `json:"api_key_id,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   *int   `json:"status,omitempty"`
+	StartAt  string `json:"start_at,omitempty"`
+	EndAt    string `json:"end_at,omitempty"`
+	Page     int    `json:"page"`
+	PerPage  int    `json:"per_page"`
+}
+
+// InsertAccessLog 插入访问日志
+func (s *Store) InsertAccessLog(log *AccessLog) error {
+	_, err := s.DB.NamedExec(
+		`INSERT INTO access_logs (timestamp, api_key_id, api_key_name, method, path, model, status_code, tokens_in, tokens_out, duration_ms, remote_ip, request_id, provider_name, error_msg)
+		 VALUES (:timestamp, :api_key_id, :api_key_name, :method, :path, :model, :status_code, :tokens_in, :tokens_out, :duration_ms, :remote_ip, :request_id, :provider_name, :error_msg)`,
+		log,
+	)
+	if err != nil {
+		return fmt.Errorf("insert access log: %w", err)
+	}
+	return nil
+}
+
+// QueryAccessLogs 查询访问日志（分页）
+func (s *Store) QueryAccessLogs(q AccessLogQuery) ([]AccessLog, int, error) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	if q.ApiKeyID != nil {
+		conditions = append(conditions, fmt.Sprintf("api_key_id = $%d", argIdx))
+		args = append(args, *q.ApiKeyID)
+		argIdx++
+	}
+	if q.Model != "" {
+		conditions = append(conditions, fmt.Sprintf("model = $%d", argIdx))
+		args = append(args, q.Model)
+		argIdx++
+	}
+	if q.Status != nil {
+		conditions = append(conditions, fmt.Sprintf("status_code = $%d", argIdx))
+		args = append(args, *q.Status)
+		argIdx++
+	}
+	if q.StartAt != "" {
+		conditions = append(conditions, fmt.Sprintf("timestamp >= $%d", argIdx))
+		args = append(args, q.StartAt)
+		argIdx++
+	}
+	if q.EndAt != "" {
+		conditions = append(conditions, fmt.Sprintf("timestamp <= $%d", argIdx))
+		args = append(args, q.EndAt)
+		argIdx++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	var total int
+	countQuery := "SELECT COUNT(*) FROM access_logs" + where
+	if err := s.DB.Get(&total, countQuery, args...); err != nil {
+		return nil, 0, fmt.Errorf("count access logs: %w", err)
+	}
+
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PerPage < 1 || q.PerPage > 100 {
+		q.PerPage = 20
+	}
+	offset := (q.Page - 1) * q.PerPage
+
+	limitArg := fmt.Sprintf("$%d", argIdx)
+	offsetArg := fmt.Sprintf("$%d", argIdx+1)
+
+	selectQuery := "SELECT * FROM access_logs" + where + " ORDER BY id DESC LIMIT " + limitArg + " OFFSET " + offsetArg
+
+	var logs []AccessLog
+	if err := s.DB.Select(&logs, selectQuery, append(args, q.PerPage, offset)...); err != nil {
+		return nil, 0, fmt.Errorf("query access logs: %w", err)
+	}
+	if logs == nil {
+		logs = []AccessLog{}
+	}
+
+	return logs, total, nil
+}
+
+// CleanupOldLogs 清理保留天数之前的日志，返回删除行数
+func (s *Store) CleanupOldLogs(retentionDays int) (int64, error) {
+	result, err := s.DB.Exec(
+		"DELETE FROM access_logs WHERE timestamp < datetime('now', ?)",
+		fmt.Sprintf("-%d days", retentionDays),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup old logs: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+// StartCleanup 启动定时清理任务
+func (s *Store) StartCleanup(ctx context.Context, interval time.Duration, retentionDays int) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n, err := s.CleanupOldLogs(retentionDays)
+				if err != nil {
+					slog.Error("access_log_cleanup_failed", "err", err)
+				} else if n > 0 {
+					slog.Info("access_log_cleanup", "deleted", n)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func randomHex(n int) string {

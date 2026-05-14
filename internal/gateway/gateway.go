@@ -18,16 +18,24 @@ import (
 
 // Gateway HTTP 网关
 type Gateway struct {
-	router      *router.Router
-	adminRoutes http.Handler
-	store       *config.Store
-	staticDir   string
-	addr        string
+	router          *router.Router
+	adminRoutes     http.Handler
+	store           *config.Store
+	accessLogWriter *accessLogWriter
+	staticDir       string
+	addr            string
 }
 
 // New 创建 Gateway
 func New(r *router.Router, adminHandler http.Handler, store *config.Store, staticDir, addr string) *Gateway {
-	return &Gateway{router: r, adminRoutes: adminHandler, store: store, staticDir: staticDir, addr: addr}
+	return &Gateway{
+		router:          r,
+		adminRoutes:     adminHandler,
+		store:           store,
+		accessLogWriter: newAccessLogWriter(store, 256),
+		staticDir:       staticDir,
+		addr:            addr,
+	}
 }
 
 // SetupRoutes 配置所有路由（AI API + Admin API 统一端口，PATH 区分）
@@ -44,6 +52,7 @@ func (g *Gateway) SetupRoutes() http.Handler {
 	// AI API 端点 — 统一在 apiKeyAuth 组内（替代原有独立注册）
 	r.Group(func(r chi.Router) {
 		r.Use(g.apiKeyAuth)
+		r.Use(g.accessLogMiddleware)
 		r.Post("/v1/messages", g.handleMessages)
 		r.Post("/v1/chat/completions", g.handleChatCompletions)
 		r.Post("/v1/responses", g.handleResponses)

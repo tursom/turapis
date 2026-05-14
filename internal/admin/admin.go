@@ -63,16 +63,20 @@ func (a *Admin) Routes() http.Handler {
 		r.Post("/api-keys", a.createAPIKey)
 		r.Get("/api-keys", a.listAPIKeys)
 		r.Delete("/api-keys/{id}", a.revokeAPIKey)
-			// 站点管理
-			r.Post("/sites", a.createSite)
-			r.Get("/sites", a.listSites)
-			r.Get("/sites/{id}", a.getSite)
-			r.Put("/sites/{id}", a.updateSite)
-			r.Delete("/sites/{id}", a.deleteSite)
-			r.Post("/sites/{id}/models", a.addSiteModel)
-			r.Get("/sites/{id}/models", a.listSiteModels)
-			r.Delete("/sites/{id}/models/{modelId}", a.deleteSiteModel)
-			r.Post("/sites/{id}/create-provider", a.createProviderFromSite)
+
+		// 访问日志
+		r.Get("/access-logs", a.listAccessLogs)
+
+		// 站点管理
+		r.Post("/sites", a.createSite)
+		r.Get("/sites", a.listSites)
+		r.Get("/sites/{id}", a.getSite)
+		r.Put("/sites/{id}", a.updateSite)
+		r.Delete("/sites/{id}", a.deleteSite)
+		r.Post("/sites/{id}/models", a.addSiteModel)
+		r.Get("/sites/{id}/models", a.listSiteModels)
+		r.Delete("/sites/{id}/models/{modelId}", a.deleteSiteModel)
+		r.Post("/sites/{id}/create-provider", a.createProviderFromSite)
 	})
 
 	return r

@@ -147,7 +147,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 }
 
 // routeStream 流式路由（连接建立前重试，数据发送后不再重试）
-func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
+func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*StreamRouteResult, error) {
 	chain, err := r.buildPriorityChain(req.Model)
 	if err != nil {
 		return nil, err
@@ -168,7 +168,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (<
 					"attempt", i+1,
 				)
 			}
-			return events, nil // 不包裹，不插入标记——保持透明性
+			return &StreamRouteResult{Events: events, ProviderName: p.Name()}, nil
 		}
 
 		cat := models.ClassifyError(err)

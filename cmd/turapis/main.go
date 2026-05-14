@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/tursom/turapis/internal/admin"
 	"github.com/tursom/turapis/internal/config"
@@ -81,6 +82,8 @@ func main() {
 	defer adminAuth.Shutdown()
 	adm := admin.New(store, registry, adminAuth)
 	gw := gateway.New(r, adm.Routes(), store, *staticDir, *addr)
+
+	store.StartCleanup(context.Background(), 1*time.Hour, 30)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

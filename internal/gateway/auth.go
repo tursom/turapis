@@ -1,11 +1,32 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/tursom/turapis/internal/config"
 )
+
+type ctxKey int
+
+const (
+	ctxKeyApiKey ctxKey = iota
+	ctxKeyCollector
+)
+
+func withApiKey(ctx context.Context, k *config.APIKey) context.Context {
+	return context.WithValue(ctx, ctxKeyApiKey, k)
+}
+
+func apiKeyFromContext(ctx context.Context) *config.APIKey {
+	if k, ok := ctx.Value(ctxKeyApiKey).(*config.APIKey); ok {
+		return k
+	}
+	return nil
+}
 
 // apiKeyAuth 中间件：对 AI API 端点的可选 Bearer 鉴权
 // 无 Authorization header 时放行（向后兼容），有则验证
@@ -18,7 +39,7 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		_, err := g.store.ValidateAPIKey(key)
+		apiKey, err := g.store.ValidateAPIKey(key)
 		if err != nil {
 			slog.Warn("invalid api key", "remote", r.RemoteAddr)
 			w.Header().Set("X-Api-Key-Auth", "invalid")
@@ -31,7 +52,8 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("X-Api-Key-Auth", "valid")
-		next.ServeHTTP(w, r)
+		ctx := withApiKey(r.Context(), apiKey)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
