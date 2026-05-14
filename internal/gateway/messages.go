@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -11,8 +13,15 @@ import (
 )
 
 func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"cannot read body"}`, http.StatusBadRequest)
+		return
+	}
+
 	var anthropicReq translate.AnthropicReq
-	if err := json.NewDecoder(r.Body).Decode(&anthropicReq); err != nil {
+	if err := json.Unmarshal(bodyBytes, &anthropicReq); err != nil {
+		slog.Warn("invalid_anthropic_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -31,7 +40,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 非流式路由
-	result, err := g.router.Route(r.Context(), unified)
+	result, err := g.router.Route(context.Background(), unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/messages", "error", err)
 		http.Error(w, `{"error":{"type":"api_error","message":"`+err.Error()+`"}}`, http.StatusInternalServerError)
@@ -45,7 +54,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	events, err := g.router.RouteStream(r.Context(), unified)
+	events, err := g.router.RouteStream(context.Background(), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/messages", "error", err)
 		http.Error(w, `{"error":{"type":"api_error","message":"`+err.Error()+`"}}`, http.StatusInternalServerError)
@@ -63,6 +72,13 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
+	// Anthropic SSE 协议要求先发 message_start + content_block_start
+	sse.WriteSSEData(w, `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"`+unified.Model+`","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+	flusher.Flush()
+	sse.WriteSSEData(w, `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+	flusher.Flush()
+
+	blockStarted := false
 	for event := range events {
 		select {
 		case <-r.Context().Done():
@@ -73,13 +89,20 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 		switch event.Type {
 		case models.StreamEventDelta:
 			if event.StopReason != "" {
-				sse.WriteSSEData(w, `{"type":"message_delta","delta":{"stop_reason":"`+event.StopReason+`"}}`)
+				sse.WriteSSEData(w, `{"type":"content_block_stop","index":0}`)
+				flusher.Flush()
+				sse.WriteSSEData(w, `{"type":"message_delta","delta":{"stop_reason":"`+event.StopReason+`"},"usage":{"output_tokens":0}}`)
 				flusher.Flush()
 			} else {
-				sse.WriteSSEData(w, `{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+escapeJSON(event.Content)+`"}}`)
+				sse.WriteSSEData(w, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+escapeJSON(event.Content)+`"}}`)
 				flusher.Flush()
 			}
+			blockStarted = true
 		case models.StreamEventStop:
+			if blockStarted {
+				sse.WriteSSEData(w, `{"type":"content_block_stop","index":0}`)
+				flusher.Flush()
+			}
 			sse.WriteSSEData(w, `{"type":"message_stop"}`)
 			flusher.Flush()
 			return

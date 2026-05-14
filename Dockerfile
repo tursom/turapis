@@ -1,6 +1,14 @@
 # Multi-stage build for turapis
-# Stage 1: build
-FROM golang:alpine AS builder
+# Stage 1: frontend build
+FROM node:alpine AS frontend-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: backend build
+FROM golang:alpine AS backend-builder
 
 ENV GOTOOLCHAIN=auto
 
@@ -14,14 +22,15 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /turapis ./cmd/turapis/
 
-# Stage 2: minimal runtime
+# Stage 3: minimal runtime
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /turapis /usr/local/bin/turapis
+COPY --from=backend-builder /turapis /usr/local/bin/turapis
+COPY --from=frontend-builder /web/dist /static
 
 EXPOSE 8080
 
 ENTRYPOINT ["turapis"]
-CMD ["-addr", ":8080", "-db", "/data/turapis.db"]
+CMD ["-addr", ":8080", "-db", "/data/turapis.db", "-static-dir", "/static", "-log-file", "/data/turapis.log"]

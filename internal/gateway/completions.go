@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -11,8 +12,15 @@ import (
 )
 
 func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":{"message":"cannot read body","type":"invalid_request_error"}}`, http.StatusBadRequest)
+		return
+	}
+
 	var openaiReq translate.OpenAIReq
-	if err := json.NewDecoder(r.Body).Decode(&openaiReq); err != nil {
+	if err := json.Unmarshal(bodyBytes, &openaiReq); err != nil {
+		slog.Warn("invalid_openai_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)
 		http.Error(w, `{"error":{"message":"invalid request body","type":"invalid_request_error"}}`, http.StatusBadRequest)
 		return
 	}

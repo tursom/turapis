@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"io"
 	"log"
 	"log/slog"
 	"os"
@@ -21,13 +23,29 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dbPath := flag.String("db", "turapis.db", "SQLite database path")
+	staticDir := flag.String("static-dir", "", "static file directory (leave empty to disable)")
+	logFile := flag.String("log-file", "", "log file path (leave empty for stderr only)")
 	flag.Parse()
+
+	if *logFile != "" {
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			log.Fatalf("open log file: %v", err)
+		}
+		defer f.Close()
+		w := io.MultiWriter(os.Stderr, f)
+		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
 
 	store, err := config.NewStore(*dbPath)
 	if err != nil {
 		log.Fatalf("init store: %v", err)
 	}
 	defer store.Close()
+
+	if err := store.SeedBuiltinSites(); err != nil {
+		slog.Warn("seed_builtin_sites_failed", "error", err)
+	}
 
 	registry := provider.NewRegistry()
 
@@ -38,18 +56,31 @@ func main() {
 	}
 	for i := range dbProviders {
 		p := &dbProviders[i]
+		apiKey := p.APIKey
+		if p.AuthMode == "oauth" {
+			var creds map[string]interface{}
+			if err := json.Unmarshal([]byte(p.APIKey), &creds); err == nil {
+				if tokens, ok := creds["tokens"].(map[string]interface{}); ok {
+					if at, ok := tokens["access_token"].(string); ok {
+						apiKey = at
+					}
+				}
+			}
+		}
 		switch p.Protocol {
 		case "openai":
-			registry.Register(po.New(p.Name, p.BaseURL, p.APIKey))
+			registry.Register(po.New(p.Name, p.BaseURL, apiKey))
 		case "anthropic":
-			registry.Register(pa.New(p.Name, p.BaseURL, p.APIKey))
+			registry.Register(pa.New(p.Name, p.BaseURL, apiKey))
 		}
 	}
 	slog.Info("loaded providers from database", "count", len(dbProviders))
 
 	r := router.New(store, registry)
-	adm := admin.New(store, registry)
-	gw := gateway.New(r, adm.Routes(), *addr)
+	adminAuth := admin.NewAdminAuth(store)
+	defer adminAuth.Shutdown()
+	adm := admin.New(store, registry, adminAuth)
+	gw := gateway.New(r, adm.Routes(), store, *staticDir, *addr)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

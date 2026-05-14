@@ -191,14 +191,19 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.url+path, bytes.NewReader(b))
+	fullURL := p.url + path
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	return p.client.Do(req)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post %s: ctx_err=%v err=%w", fullURL, ctx.Err(), err)
+	}
+	return resp, nil
 }
 
 func (p *OpenAIProvider) doGet(ctx context.Context, path string) (*http.Response, error) {

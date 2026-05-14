@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/tursom/turapis/internal/models"
 )
@@ -11,14 +12,14 @@ import (
 
 // AnthropicReq Anthropic Messages API 请求
 type AnthropicReq struct {
-	Model       string         `json:"model"`
-	Messages    []AnthropicMsg `json:"messages"`
-	System      string         `json:"system,omitempty"`
-	MaxTokens   int            `json:"max_tokens"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	TopP        *float64       `json:"top_p,omitempty"`
-	StopSeq     []string       `json:"stop_sequences,omitempty"`
-	Stream      bool           `json:"stream"`
+	Model       string          `json:"model"`
+	Messages    []AnthropicMsg  `json:"messages"`
+	System      json.RawMessage `json:"system,omitempty"`
+	MaxTokens   int             `json:"max_tokens"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	StopSeq     []string        `json:"stop_sequences,omitempty"`
+	Stream      bool            `json:"stream"`
 
 	// 高级特性检测用
 	Tools       json.RawMessage `json:"tools,omitempty"`
@@ -26,10 +27,69 @@ type AnthropicReq struct {
 	Thinking    json.RawMessage `json:"thinking,omitempty"`
 }
 
+// GetSystem 提取 system 字段，支持字符串和内容块数组两种格式
+func (req *AnthropicReq) GetSystem() string {
+	if len(req.System) == 0 {
+		return ""
+	}
+	if req.System[0] == '"' {
+		var s string
+		json.Unmarshal(req.System, &s)
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(req.System, &blocks); err != nil {
+		return ""
+	}
+	var out string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			if out != "" {
+				out += "\n"
+			}
+			out += b.Text
+		}
+	}
+	return out
+}
+
 // AnthropicMsg Anthropic 消息
 type AnthropicMsg struct {
 	Role    string              `json:"role"`
-	Content []AnthropicContent  `json:"content"`
+	Content []AnthropicContent  `json:"-"`
+}
+
+// UnmarshalJSON 处理 content 为字符串或数组两种格式
+func (m *AnthropicMsg) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+
+	if len(raw.Content) == 0 {
+		m.Content = nil
+		return nil
+	}
+
+	if raw.Content[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw.Content, &s); err != nil {
+			return err
+		}
+		m.Content = []AnthropicContent{{Type: "text", Text: s}}
+	} else {
+		if err := json.Unmarshal(raw.Content, &m.Content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AnthropicContent Anthropic 内容块
@@ -81,28 +141,19 @@ type AnthropicSSEStop struct {
 // AnthropicRequestToUnified 将 Anthropic 请求转为内部统一格式
 // 检测高级特性（tools/thinking），返回 ErrUnsupportedFeature
 func AnthropicRequestToUnified(req *AnthropicReq) (*models.UnifiedRequest, error) {
-	// AC10: 检测不支持的高级特性
-	if len(req.Tools) > 0 {
-		return nil, fmt.Errorf("%w: tools/tool_use", models.ErrUnsupportedFeature)
-	}
-	if len(req.ToolChoice) > 0 {
-		return nil, fmt.Errorf("%w: tool_choice", models.ErrUnsupportedFeature)
-	}
-	if len(req.Thinking) > 0 {
-		return nil, fmt.Errorf("%w: thinking", models.ErrUnsupportedFeature)
-	}
-	// 检查 content 中的非 text 块
+	// 忽略不支持的高级特性，只处理基础文本对话
+	// tools/thinking 等字段会被静默丢弃，客户端发送的文本消息正常处理
 	for _, msg := range req.Messages {
 		for _, block := range msg.Content {
 			if block.Type != "text" && block.Type != "" {
-				return nil, fmt.Errorf("%w: content type %q", models.ErrUnsupportedFeature, block.Type)
+				slog.Warn("ignoring_unsupported_content_block", "type", block.Type)
 			}
 		}
 	}
 
 	unified := &models.UnifiedRequest{
 		Model:       req.Model,
-		System:      req.System,
+		System:      req.GetSystem(),
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,

@@ -92,7 +92,7 @@ func classifyByStatus(statusCode int, body []byte) ErrorCategory {
 }
 
 func isTimeout(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 
@@ -102,13 +102,19 @@ func isTimeout(err error) bool {
 	}
 
 	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Timeout() {
-		return true
+	if errors.As(err, &urlErr) {
+		if urlErr.Timeout() {
+			return true
+		}
+		if errors.Is(urlErr.Err, context.Canceled) {
+			return true
+		}
 	}
 
 	msg := err.Error()
 	return strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context canceled") ||
 		strings.Contains(msg, "context deadline exceeded")
 }
 

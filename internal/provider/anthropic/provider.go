@@ -199,7 +199,8 @@ func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body int
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.url+path, bytes.NewReader(b))
+	fullURL := p.url + path
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -207,7 +208,11 @@ func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body int
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	return p.client.Do(req)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post %s: ctx_err=%v err=%w", fullURL, ctx.Err(), err)
+	}
+	return resp, nil
 }
 
 func (p *AnthropicProvider) doGet(ctx context.Context, path string) (*http.Response, error) {
@@ -221,9 +226,10 @@ func (p *AnthropicProvider) doGet(ctx context.Context, path string) (*http.Respo
 }
 
 func toAnthropicRequest(req *models.UnifiedRequest) *translate.AnthropicReq {
+	systemRaw, _ := json.Marshal(req.System)
 	aReq := &translate.AnthropicReq{
 		Model:       req.Model,
-		System:      req.System,
+		System:      systemRaw,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,

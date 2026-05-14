@@ -6,7 +6,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - turapis-data:/data
+      - ./data:/data
     environment:
       - TZ=Asia/Shanghai
     command:
@@ -14,6 +14,7 @@ services:
       - ":8080"
       - "-db"
       - "/data/turapis.db"
-
-volumes:
-  turapis-data:
+      - "-static-dir"
+      - "/static"
+      - "-log-file"
+      - "/data/turapis.log"

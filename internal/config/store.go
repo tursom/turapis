@@ -1,7 +1,9 @@
 package config
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -18,10 +20,31 @@ type Provider struct {
 	BaseURL   string `db:"base_url" json:"base_url"`
 	APIKey    string `db:"api_key" json:"api_key"`
 	Protocol  string `db:"protocol" json:"protocol"`
+	AuthMode  string `db:"auth_mode" json:"auth_mode"`
 	Priority  int    `db:"priority" json:"priority"`
 	Enabled   bool   `db:"enabled" json:"enabled"`
 	CreatedAt string `db:"created_at" json:"created_at"`
 	UpdatedAt string `db:"updated_at" json:"updated_at"`
+}
+
+// Site 站点预设（Provider 模板，不含认证信息）
+type Site struct {
+	ID        int    `db:"id" json:"id"`
+	Name      string `db:"name" json:"name"`
+	BaseURL   string `db:"base_url" json:"base_url"`
+	Protocol  string `db:"protocol" json:"protocol"`
+	AuthMode  string `db:"auth_mode" json:"auth_mode"`
+	Enabled   bool   `db:"enabled" json:"enabled"`
+	CreatedAt string `db:"created_at" json:"created_at"`
+	UpdatedAt string `db:"updated_at" json:"updated_at"`
+}
+
+// SiteModel 站点预设模型
+type SiteModel struct {
+	ID        int    `db:"id" json:"id"`
+	SiteID    int    `db:"site_id" json:"site_id"`
+	ModelID   string `db:"model_id" json:"model_id"`
+	ModelName string `db:"model_name" json:"model_name"`
 }
 
 // ModelMapping 模型到 Provider 的映射
@@ -81,6 +104,7 @@ func initSchema(db *sqlx.DB) error {
 	    base_url    TEXT NOT NULL,
 	    api_key     TEXT NOT NULL,
 	    protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
+	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
 	    priority    INTEGER NOT NULL DEFAULT 100,
 	    enabled     INTEGER NOT NULL DEFAULT 1,
 	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -109,6 +133,39 @@ func initSchema(db *sqlx.DB) error {
 	    model_name  TEXT NOT NULL,
 	    UNIQUE(provider_id, model_id)
 	);
+
+	CREATE TABLE IF NOT EXISTS api_keys (
+	    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	    key             TEXT NOT NULL UNIQUE,
+	    name            TEXT NOT NULL DEFAULT '',
+	    enabled         INTEGER NOT NULL DEFAULT 1,
+	    permissions     TEXT NOT NULL DEFAULT '{}',
+	    expires_at      TEXT DEFAULT NULL,
+	    rate_limit      INTEGER DEFAULT NULL,
+	    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS sites (
+	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	    name        TEXT NOT NULL UNIQUE,
+	    base_url    TEXT NOT NULL,
+	    protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
+	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
+	    enabled     INTEGER NOT NULL DEFAULT 1,
+	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+	    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS site_models (
+	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	    site_id     INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+	    model_id    TEXT NOT NULL,
+	    model_name  TEXT NOT NULL,
+	    UNIQUE(site_id, model_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_site_models_site_id ON site_models(site_id);
+	CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id ON provider_models(provider_id);
 	`
 	_, err := db.Exec(schema)
 	return err
@@ -128,8 +185,8 @@ func (s *Store) CreateProvider(p *Provider) error {
 	p.UpdatedAt = now
 
 	result, err := s.DB.NamedExec(
-		`INSERT INTO providers (name, base_url, api_key, protocol, priority, enabled, created_at, updated_at)
-		 VALUES (:name, :base_url, :api_key, :protocol, :priority, :enabled, :created_at, :updated_at)`,
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :created_at, :updated_at)`,
 		p,
 	)
 	if err != nil {
@@ -197,7 +254,7 @@ func (s *Store) UpdateProvider(p *Provider) error {
 	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	_, err := s.DB.NamedExec(
 		`UPDATE providers SET name=:name, base_url=:base_url, api_key=:api_key,
-		 protocol=:protocol, priority=:priority, enabled=:enabled, updated_at=:updated_at
+		 protocol=:protocol, auth_mode=:auth_mode, priority=:priority, enabled=:enabled, updated_at=:updated_at
 		 WHERE id=:id`,
 		p,
 	)
@@ -253,6 +310,7 @@ func (s *Store) GetPriorityChain(modelName string) ([]PriorityChainEntry, error)
 	query := `
 		SELECT p.id AS "provider.id", p.name AS "provider.name", p.base_url AS "provider.base_url",
 		       p.api_key AS "provider.api_key", p.protocol AS "provider.protocol",
+		       p.auth_mode AS "provider.auth_mode",
 		       p.priority AS "provider.priority", p.enabled AS "provider.enabled",
 		       p.created_at AS "provider.created_at", p.updated_at AS "provider.updated_at",
 		       mm.priority
@@ -392,4 +450,378 @@ func (s *Store) GetProviderModels(providerID int) ([]struct {
 		}{}
 	}
 	return models, nil
+}
+
+// APIKey 下游客户端 API 密钥
+type APIKey struct {
+	ID          int     `db:"id" json:"id"`
+	Key         string  `db:"key" json:"key"`
+	Name        string  `db:"name" json:"name"`
+	Enabled     bool    `db:"enabled" json:"enabled"`
+	Permissions string  `db:"permissions" json:"-"`
+	ExpiresAt   *string `db:"expires_at" json:"-"`
+	RateLimit   *int    `db:"rate_limit" json:"-"`
+	CreatedAt   string  `db:"created_at" json:"created_at"`
+}
+
+// CreateAPIKey 创建 API Key
+func (s *Store) CreateAPIKey(name string) (*APIKey, error) {
+	key := "sk-" + randomHex(48)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.DB.Exec(
+		`INSERT INTO api_keys (key, name, enabled, permissions, created_at)
+		 VALUES (?, ?, 1, '{}', ?)`,
+		key, name, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create api key: %w", err)
+	}
+	id, _ := result.LastInsertId()
+
+	return &APIKey{
+		ID:        int(id),
+		Key:       key,
+		Name:      name,
+		Enabled:   true,
+		CreatedAt: now,
+	}, nil
+}
+
+// ListAPIKeys 列出所有 API Key（按时间倒序）
+func (s *Store) ListAPIKeys() ([]APIKey, error) {
+	var keys []APIKey
+	err := s.DB.Select(&keys, "SELECT * FROM api_keys ORDER BY created_at DESC")
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	if keys == nil {
+		keys = []APIKey{}
+	}
+	return keys, nil
+}
+
+// RevokeAPIKey 吊销 API Key
+func (s *Store) RevokeAPIKey(id int) error {
+	_, err := s.DB.Exec("UPDATE api_keys SET enabled = 0 WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("revoke api key: %w", err)
+	}
+	return nil
+}
+
+// ValidateAPIKey 验证 API Key
+func (s *Store) ValidateAPIKey(key string) (*APIKey, error) {
+	var k APIKey
+	err := s.DB.Get(&k, "SELECT * FROM api_keys WHERE key = ? AND enabled = 1", key)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("invalid api key")
+		}
+		return nil, fmt.Errorf("validate api key: %w", err)
+	}
+	return &k, nil
+}
+
+// --- Site CRUD ---
+
+func (s *Store) CreateSite(site *Site) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	site.CreatedAt = now
+	site.UpdatedAt = now
+	result, err := s.DB.NamedExec(
+		`INSERT INTO sites (name, base_url, protocol, auth_mode, enabled, created_at, updated_at)
+		 VALUES (:name, :base_url, :protocol, :auth_mode, :enabled, :created_at, :updated_at)`,
+		site,
+	)
+	if err != nil {
+		return fmt.Errorf("create site: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	site.ID = int(id)
+	return nil
+}
+
+func (s *Store) GetSite(id int) (*Site, error) {
+	var site Site
+	err := s.DB.Get(&site, "SELECT * FROM sites WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("site %d not found", id)
+		}
+		return nil, fmt.Errorf("get site: %w", err)
+	}
+	return &site, nil
+}
+
+func (s *Store) ListSites() ([]Site, error) {
+	var sites []Site
+	err := s.DB.Select(&sites, "SELECT * FROM sites ORDER BY name ASC")
+	if err != nil {
+		return nil, fmt.Errorf("list sites: %w", err)
+	}
+	if sites == nil {
+		sites = []Site{}
+	}
+	return sites, nil
+}
+
+func (s *Store) UpdateSite(site *Site) error {
+	site.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	_, err := s.DB.NamedExec(
+		`UPDATE sites SET name=:name, base_url=:base_url, protocol=:protocol,
+		 auth_mode=:auth_mode, enabled=:enabled, updated_at=:updated_at
+		 WHERE id=:id`,
+		site,
+	)
+	if err != nil {
+		return fmt.Errorf("update site: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteSite(id int) error {
+	_, err := s.DB.Exec("DELETE FROM sites WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete site: %w", err)
+	}
+	return nil
+}
+
+// --- Site Models ---
+
+func (s *Store) AddSiteModel(siteID int, modelID, modelName string) error {
+	_, err := s.DB.Exec(
+		`INSERT OR IGNORE INTO site_models (site_id, model_id, model_name) VALUES (?, ?, ?)`,
+		siteID, modelID, modelName,
+	)
+	return err
+}
+
+func (s *Store) GetSiteModels(siteID int) ([]SiteModel, error) {
+	var models []SiteModel
+	err := s.DB.Select(&models, "SELECT * FROM site_models WHERE site_id = ? ORDER BY id", siteID)
+	if err != nil {
+		return nil, fmt.Errorf("get site models: %w", err)
+	}
+	if models == nil {
+		models = []SiteModel{}
+	}
+	return models, nil
+}
+
+func (s *Store) DeleteSiteModel(id int) error {
+	_, err := s.DB.Exec("DELETE FROM site_models WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete site model: %w", err)
+	}
+	return nil
+}
+
+// --- Transaction helpers ---
+
+func (s *Store) createProviderTx(tx *sqlx.Tx, p *Provider) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	result, err := tx.NamedExec(
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :created_at, :updated_at)`,
+		p,
+	)
+	if err != nil {
+		return fmt.Errorf("create provider tx: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	p.ID = int(id)
+	return nil
+}
+
+func (s *Store) createModelMappingTx(tx *sqlx.Tx, m *ModelMapping) error {
+	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	result, err := tx.NamedExec(
+		`INSERT INTO model_mappings (model_name, provider_id, priority, enabled, created_at)
+		 VALUES (:model_name, :provider_id, :priority, :enabled, :created_at)`,
+		m,
+	)
+	if err != nil {
+		return fmt.Errorf("create model mapping tx: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	m.ID = int(id)
+	return nil
+}
+
+// --- Create Provider from Site ---
+
+func (s *Store) CreateProviderFromSite(siteID int, nameOverride string, apiKey string, oauthJSON json.RawMessage) (*Provider, int, error) {
+	site, err := s.GetSite(siteID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get site: %w", err)
+	}
+
+	name := site.Name
+	if nameOverride != "" {
+		name = nameOverride
+	}
+
+	var credential string
+	switch site.AuthMode {
+	case "api_key":
+		credential = apiKey
+	case "oauth":
+		if len(oauthJSON) > 0 {
+			credential = string(oauthJSON)
+		}
+	default:
+		credential = apiKey
+	}
+
+	provider := &Provider{
+		Name:     name,
+		BaseURL:  site.BaseURL,
+		APIKey:   credential,
+		Protocol: site.Protocol,
+		AuthMode: site.AuthMode,
+		Priority: 100,
+		Enabled:  true,
+	}
+
+	siteModels, err := s.GetSiteModels(siteID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get site models: %w", err)
+	}
+
+	tx, err := s.DB.Beginx()
+	if err != nil {
+		return nil, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.createProviderTx(tx, provider); err != nil {
+		return nil, 0, err
+	}
+
+	mappingsCreated := 0
+	for _, sm := range siteModels {
+		m := &ModelMapping{
+			ModelName:  sm.ModelName,
+			ProviderID: provider.ID,
+			Priority:   100,
+			Enabled:    true,
+		}
+		if err := s.createModelMappingTx(tx, m); err != nil {
+			return nil, 0, fmt.Errorf("create mapping for %s: %w", sm.ModelName, err)
+		}
+		mappingsCreated++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, 0, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return provider, mappingsCreated, nil
+}
+
+// --- Seed Built-in Sites ---
+
+func (s *Store) SeedBuiltinSites() error {
+	builtinSites := []struct {
+		Site   Site
+		Models []struct{ ModelID, ModelName string }
+	}{
+		{
+			Site: Site{Name: "DeepSeek 官方", BaseURL: "https://api.deepseek.com", Protocol: "openai", AuthMode: "api_key", Enabled: true},
+			Models: []struct{ ModelID, ModelName string }{
+				{"deepseek-chat", "deepseek-chat"},
+				{"deepseek-reasoner", "deepseek-reasoner"},
+			},
+		},
+		{
+			Site: Site{Name: "OpenAI 官方", BaseURL: "https://api.openai.com", Protocol: "openai", AuthMode: "api_key", Enabled: true},
+			Models: []struct{ ModelID, ModelName string }{
+				{"gpt-4o", "gpt-4o"},
+				{"gpt-4o-mini", "gpt-4o-mini"},
+				{"gpt-4-turbo", "gpt-4-turbo"},
+			},
+		},
+		{
+			Site: Site{Name: "Anthropic 官方", BaseURL: "https://api.anthropic.com", Protocol: "anthropic", AuthMode: "api_key", Enabled: true},
+			Models: []struct{ ModelID, ModelName string }{
+				{"claude-sonnet-4-6", "claude-sonnet-4-6"},
+				{"claude-opus-4-7", "claude-opus-4-7"},
+				{"claude-haiku-4-5", "claude-haiku-4-5"},
+			},
+		},
+		{
+			Site: Site{Name: "Codex (ChatGPT)", BaseURL: "https://api.openai.com", Protocol: "openai", AuthMode: "oauth", Enabled: true},
+			Models: []struct{ ModelID, ModelName string }{
+				{"gpt-4o", "gpt-4o"},
+				{"gpt-4o-mini", "gpt-4o-mini"},
+			},
+		},
+		{
+			Site: Site{Name: "opencode go 订阅", BaseURL: "https://opencode.ai/zen/go/v1", Protocol: "openai", AuthMode: "api_key", Enabled: true},
+			Models: []struct{ ModelID, ModelName string }{
+				{"deepseek-v4-flash", "deepseek-v4-flash"},
+				{"deepseek-v4-pro", "deepseek-v4-pro"},
+				{"glm-5.1", "glm-5.1"},
+				{"kimi-k2.6", "kimi-k2.6"},
+				{"mimo-v2.5-pro", "mimo-v2.5-pro"},
+				{"minimax-m2.7", "minimax-m2.7"},
+				{"qwen3.5-plus", "qwen3.5-plus"},
+			},
+		},
+	}
+
+	for _, bs := range builtinSites {
+		now := time.Now().UTC().Format(time.RFC3339)
+		bs.Site.CreatedAt = now
+		bs.Site.UpdatedAt = now
+
+		_, err := s.DB.NamedExec(
+			`INSERT INTO sites (name, base_url, protocol, auth_mode, enabled, created_at, updated_at)
+			 VALUES (:name, :base_url, :protocol, :auth_mode, :enabled, :created_at, :updated_at)
+			 ON CONFLICT(name) DO UPDATE SET
+			   base_url=excluded.base_url,
+			   protocol=excluded.protocol,
+			   auth_mode=excluded.auth_mode,
+			   updated_at=datetime('now')`,
+			&bs.Site,
+		)
+		if err != nil {
+			return fmt.Errorf("seed site %s: %w", bs.Site.Name, err)
+		}
+
+		if bs.Site.ID == 0 {
+			var siteID int
+			if err := s.DB.Get(&siteID, "SELECT id FROM sites WHERE name = ?", bs.Site.Name); err != nil {
+				return fmt.Errorf("get site id for %s: %w", bs.Site.Name, err)
+			}
+			bs.Site.ID = siteID
+		}
+
+		_, err = s.DB.Exec("DELETE FROM site_models WHERE site_id = ?", bs.Site.ID)
+		if err != nil {
+			return fmt.Errorf("delete old models for %s: %w", bs.Site.Name, err)
+		}
+
+		for _, m := range bs.Models {
+			_, err := s.DB.Exec("INSERT INTO site_models (site_id, model_id, model_name) VALUES (?, ?, ?)",
+				bs.Site.ID, m.ModelID, m.ModelName)
+			if err != nil {
+				return fmt.Errorf("seed model %s for %s: %w", m.ModelID, bs.Site.Name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n/2)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }

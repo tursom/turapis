@@ -115,13 +115,23 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 	if !p.Enabled {
 		return
 	}
-
+	apiKey := p.APIKey
+	if p.AuthMode == "oauth" {
+		var creds map[string]interface{}
+		if err := json.Unmarshal([]byte(p.APIKey), &creds); err == nil {
+			if tokens, ok := creds["tokens"].(map[string]interface{}); ok {
+				if at, ok := tokens["access_token"].(string); ok {
+					apiKey = at
+				}
+			}
+		}
+	}
 	var prov provider.Provider
 	switch p.Protocol {
 	case "openai":
-		prov = openai.New(p.Name, p.BaseURL, p.APIKey)
+		prov = openai.New(p.Name, p.BaseURL, apiKey)
 	case "anthropic":
-		prov = anthropic.New(p.Name, p.BaseURL, p.APIKey)
+		prov = anthropic.New(p.Name, p.BaseURL, apiKey)
 	default:
 		return
 	}

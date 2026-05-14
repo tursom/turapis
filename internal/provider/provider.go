@@ -15,10 +15,19 @@ var sharedTransport = &http.Transport{
 	MaxIdleConns:        100,
 	MaxIdleConnsPerHost: 10,
 	IdleConnTimeout:     90 * time.Second,
-	DialContext: (&net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
+	ForceAttemptHTTP2:   false,
+	TLSHandshakeTimeout:  10 * time.Second,
+	DialContext:          dialIPv4First,
+}
+
+func dialIPv4First(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host); err == nil && len(ips) > 0 {
+			return d.DialContext(ctx, "tcp4", net.JoinHostPort(ips[0].String(), port))
+		}
+	}
+	return d.DialContext(ctx, network, addr)
 }
 
 // SharedTransport 返回全局共享的 HTTP Transport（供各 Provider 使用）

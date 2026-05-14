@@ -20,3 +20,9 @@ Thumbs.db
 # Env
 .env
 .env.*
+
+# Frontend
+web/node_modules/
+web/dist/
+
+/data

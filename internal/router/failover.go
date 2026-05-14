@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -126,7 +127,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 		slog.Warn("provider_failed",
 			"provider", p.Name(),
 			"error_category", string(cat),
-			"error", sanitizeError(err),
+			"error", formatError(err),
 		)
 
 		if !models.ShouldFailover(cat) {
@@ -140,7 +141,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	slog.Error("all_providers_failed",
 		"model", req.Model,
 		"attempts", len(attempts),
-		"error", sanitizeError(lastErr),
+		"error", formatError(lastErr),
 	)
 	return nil, ferr
 }
@@ -174,7 +175,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (<
 		slog.Warn("stream_connect_failed",
 			"provider", p.Name(),
 			"error_category", string(cat),
-			"error", sanitizeError(err),
+			"error", formatError(err),
 		)
 
 		lastErr = err
@@ -186,15 +187,24 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (<
 	return nil, &FailoverError{LastError: lastErr, Attempts: nil}
 }
 
-// sanitizeError 清除错误消息中的 API key
-func sanitizeError(err error) string {
+// formatError 提取完整错误信息，包含上游响应体
+func formatError(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
-	// 简单处理：截断过长的错误消息
-	if len(msg) > 500 {
-		msg = msg[:500] + "..."
+	var parts []string
+	parts = append(parts, err.Error())
+
+	var ue *models.UpstreamError
+	if errors.As(err, &ue) {
+		parts = append(parts, fmt.Sprintf("status=%d", ue.StatusCode))
+		if len(ue.Body) > 0 {
+			body := string(ue.Body)
+			if len(body) > 1000 {
+				body = body[:1000] + "..."
+			}
+			parts = append(parts, "body="+body)
+		}
 	}
-	return msg
+	return strings.Join(parts, " | ")
 }
