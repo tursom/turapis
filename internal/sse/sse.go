@@ -2,7 +2,7 @@ package sse
 
 import (
 	"bufio"
-	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,7 +111,7 @@ func StreamEvents(w http.ResponseWriter, r *http.Request, events <-chan models.U
 
 		switch event.Type {
 		case models.StreamEventDelta:
-			WriteSSEData(w, formatDelta(event.Content, event.StopReason))
+			WriteSSEData(w, formatDelta(event.Content, event.StopReason, event.ToolCalls))
 			flusher.Flush()
 		case models.StreamEventStop:
 			WriteSSEDone(w)
@@ -123,45 +123,47 @@ func StreamEvents(w http.ResponseWriter, r *http.Request, events <-chan models.U
 			return event.Error
 		}
 	}
+
+	// 通道提前关闭（上游断连等），发送 [DONE] 作为兜底
+	select {
+	case <-r.Context().Done():
+		return nil
+	default:
+	}
+	WriteSSEDone(w)
+	flusher.Flush()
 	return nil
 }
 
-func formatDelta(content, stopReason string) string {
-	var buf bytes.Buffer
-	buf.WriteString("data: {\"choices\":[{\"delta\":{\"content\":")
-	b, _ := jsonMarshal(content)
-	buf.Write(b)
-	if stopReason != "" {
-		buf.WriteString(",\"finish_reason\":")
-		bs, _ := jsonMarshal(stopReason)
-		buf.Write(bs)
-	}
-	buf.WriteString("},\"index\":0}]}")
-	return buf.String()
+type sseChunk struct {
+	Choices []sseChoice `json:"choices"`
 }
 
-func jsonMarshal(s string) ([]byte, error) {
-	if s == "" {
-		return []byte(`""`), nil
+type sseChoice struct {
+	Index        int                    `json:"index"`
+	Delta        sseDelta              `json:"delta"`
+	FinishReason string                 `json:"finish_reason,omitempty"`
+}
+
+type sseDelta struct {
+	Role      string                 `json:"role,omitempty"`
+	Content   string                 `json:"content,omitempty"`
+	ToolCalls []models.ToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+func formatDelta(content, stopReason string, toolCalls []models.ToolCallDelta) string {
+	chunk := sseChunk{
+		Choices: []sseChoice{{
+			Index: 0,
+			Delta: sseDelta{
+				Content:   content,
+				ToolCalls: toolCalls,
+			},
+		}},
 	}
-	buf := new(bytes.Buffer)
-	buf.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			buf.WriteString(`\"`)
-		case '\\':
-			buf.WriteString(`\\`)
-		case '\n':
-			buf.WriteString(`\n`)
-		case '\r':
-			buf.WriteString(`\r`)
-		case '\t':
-			buf.WriteString(`\t`)
-		default:
-			buf.WriteRune(r)
-		}
+	if stopReason != "" {
+		chunk.Choices[0].FinishReason = stopReason
 	}
-	buf.WriteByte('"')
-	return buf.Bytes(), nil
+	b, _ := json.Marshal(chunk)
+	return string(b)
 }

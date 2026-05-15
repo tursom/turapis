@@ -17,17 +17,18 @@ import (
 )
 
 // Provider 上游 API 提供者配置
-type Provider struct {
-	ID        int    `db:"id" json:"id"`
-	Name      string `db:"name" json:"name"`
-	BaseURL   string `db:"base_url" json:"base_url"`
-	APIKey    string `db:"api_key" json:"api_key"`
-	Protocol  string `db:"protocol" json:"protocol"`
-	AuthMode  string `db:"auth_mode" json:"auth_mode"`
-	Priority  int    `db:"priority" json:"priority"`
-	Enabled   bool   `db:"enabled" json:"enabled"`
-	CreatedAt string `db:"created_at" json:"created_at"`
-	UpdatedAt string `db:"updated_at" json:"updated_at"`
+	type Provider struct {
+	ID              int    `db:"id" json:"id"`
+	Name            string `db:"name" json:"name"`
+	BaseURL         string `db:"base_url" json:"base_url"`
+	APIKey          string `db:"api_key" json:"api_key"`
+	Protocol        string `db:"protocol" json:"protocol"`
+	AuthMode        string `db:"auth_mode" json:"auth_mode"`
+	Priority        int    `db:"priority" json:"priority"`
+	Enabled         bool   `db:"enabled" json:"enabled"`
+	SupportedTools  string `db:"supported_tools" json:"supported_tools"`
+	CreatedAt       string `db:"created_at" json:"created_at"`
+	UpdatedAt       string `db:"updated_at" json:"updated_at"`
 }
 
 // Site 站点预设（Provider 模板，不含认证信息）
@@ -110,6 +111,7 @@ func initSchema(db *sqlx.DB) error {
 	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
 	    priority    INTEGER NOT NULL DEFAULT 100,
 	    enabled     INTEGER NOT NULL DEFAULT 1,
+	    supported_tools TEXT NOT NULL DEFAULT '["web_search"]',
 	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 	    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);
@@ -191,7 +193,11 @@ func initSchema(db *sqlx.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_id ON access_logs(api_key_id);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	db.Exec("ALTER TABLE providers ADD COLUMN supported_tools TEXT NOT NULL DEFAULT '[\"web_search\"]'")
+	return nil
 }
 
 // Close 关闭数据库连接
@@ -208,8 +214,8 @@ func (s *Store) CreateProvider(p *Provider) error {
 	p.UpdatedAt = now
 
 	result, err := s.DB.NamedExec(
-		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, created_at, updated_at)
-		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :created_at, :updated_at)`,
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :created_at, :updated_at)`,
 		p,
 	)
 	if err != nil {
@@ -277,7 +283,8 @@ func (s *Store) UpdateProvider(p *Provider) error {
 	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	_, err := s.DB.NamedExec(
 		`UPDATE providers SET name=:name, base_url=:base_url, api_key=:api_key,
-		 protocol=:protocol, auth_mode=:auth_mode, priority=:priority, enabled=:enabled, updated_at=:updated_at
+		 protocol=:protocol, auth_mode=:auth_mode, priority=:priority, enabled=:enabled,
+		 supported_tools=:supported_tools, updated_at=:updated_at
 		 WHERE id=:id`,
 		p,
 	)
@@ -648,8 +655,8 @@ func (s *Store) createProviderTx(tx *sqlx.Tx, p *Provider) error {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	result, err := tx.NamedExec(
-		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, created_at, updated_at)
-		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :created_at, :updated_at)`,
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :created_at, :updated_at)`,
 		p,
 	)
 	if err != nil {

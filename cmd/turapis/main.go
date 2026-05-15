@@ -68,11 +68,19 @@ func main() {
 				}
 			}
 		}
+		var supportedTools []string
+		if p.SupportedTools != "" {
+			json.Unmarshal([]byte(p.SupportedTools), &supportedTools)
+		}
 		switch p.Protocol {
 		case "openai":
-			registry.Register(po.New(p.Name, p.BaseURL, apiKey))
+			prov := po.New(p.Name, p.BaseURL, apiKey, supportedTools)
+			if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
+				prov.SetSearXNG(searxngURL)
+			}
+			registry.Register(prov)
 		case "anthropic":
-			registry.Register(pa.New(p.Name, p.BaseURL, apiKey))
+			registry.Register(pa.New(p.Name, p.BaseURL, apiKey, supportedTools))
 		}
 	}
 	slog.Info("loaded providers from database", "count", len(dbProviders))

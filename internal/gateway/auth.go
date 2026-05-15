@@ -39,9 +39,15 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		if strings.HasPrefix(key, "eyJ") {
+			w.Header().Set("X-Api-Key-Auth", "jwt-passthrough")
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		apiKey, err := g.store.ValidateAPIKey(key)
 		if err != nil {
-			slog.Warn("invalid api key", "remote", r.RemoteAddr)
+			slog.Warn("invalid api key", "remote", r.RemoteAddr, "token_prefix", key[:min(8, len(key))])
 			w.Header().Set("X-Api-Key-Auth", "invalid")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)

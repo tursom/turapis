@@ -157,9 +157,11 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 	}
 
 	var lastErr error
-	// 只在连接建立前重试
+	var attempts []AttemptInfo
 	for i, p := range chain {
+		start := time.Now()
 		events, err := p.ChatCompletionStream(ctx, req)
+		duration := time.Since(start)
 		if err == nil {
 			if i > 0 {
 				slog.Info("stream_failover",
@@ -172,6 +174,11 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 		}
 
 		cat := models.ClassifyError(err)
+		attempts = append(attempts, AttemptInfo{
+			Provider: p.Name(),
+			Error:    err,
+			Duration: duration,
+		})
 		slog.Warn("stream_connect_failed",
 			"provider", p.Name(),
 			"error_category", string(cat),
@@ -184,7 +191,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 		}
 	}
 
-	return nil, &FailoverError{LastError: lastErr, Attempts: nil}
+	return nil, &FailoverError{LastError: lastErr, Attempts: attempts}
 }
 
 // formatError 提取完整错误信息，包含上游响应体

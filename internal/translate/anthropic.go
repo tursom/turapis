@@ -8,7 +8,7 @@ import (
 	"github.com/tursom/turapis/internal/models"
 )
 
-// --- Anthropic Messages 请求/响应类型（手写结构体，v1 text-only） ---
+// --- Anthropic Messages 请求/响应类型 ---
 
 // AnthropicReq Anthropic Messages API 请求
 type AnthropicReq struct {
@@ -21,10 +21,10 @@ type AnthropicReq struct {
 	StopSeq     []string        `json:"stop_sequences,omitempty"`
 	Stream      bool            `json:"stream"`
 
-	// 高级特性检测用
-	Tools       json.RawMessage `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	Thinking    json.RawMessage `json:"thinking,omitempty"`
+	// 高级特性
+	Tools      json.RawMessage `json:"tools,omitempty"`
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	Thinking   json.RawMessage `json:"thinking,omitempty"`
 }
 
 // GetSystem 提取 system 字段，支持字符串和内容块数组两种格式
@@ -58,8 +58,8 @@ func (req *AnthropicReq) GetSystem() string {
 
 // AnthropicMsg Anthropic 消息
 type AnthropicMsg struct {
-	Role    string              `json:"role"`
-	Content []AnthropicContent  `json:"-"`
+	Role    string             `json:"role"`
+	Content []AnthropicContent `json:"-"`
 }
 
 // UnmarshalJSON 处理 content 为字符串或数组两种格式
@@ -92,20 +92,36 @@ func (m *AnthropicMsg) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON 处理 content 序列化
+func (m AnthropicMsg) MarshalJSON() ([]byte, error) {
+	type alias AnthropicMsg
+	raw, err := json.Marshal(alias(m))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // AnthropicContent Anthropic 内容块
 type AnthropicContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type      string          `json:"type"`                 // "text", "tool_use", "tool_result"
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`         // tool_use
+	Name      string          `json:"name,omitempty"`       // tool_use
+	Input     json.RawMessage `json:"input,omitempty"`      // tool_use input
+	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
+	Content   json.RawMessage `json:"content,omitempty"`    // tool_result content
+	IsError   bool            `json:"is_error,omitempty"`   // tool_result
 }
 
 // AnthropicResp Anthropic Messages API 响应
 type AnthropicResp struct {
-	ID         string           `json:"id"`
-	Model      string           `json:"model"`
-	Role       string           `json:"role"`
+	ID         string            `json:"id"`
+	Model      string            `json:"model"`
+	Role       string            `json:"role"`
 	Content    []AnthropicContent `json:"content"`
-	StopReason string           `json:"stop_reason"`
-	Usage      AnthropicUsage   `json:"usage"`
+	StopReason string            `json:"stop_reason"`
+	Usage      AnthropicUsage    `json:"usage"`
 }
 
 // AnthropicUsage Anthropic 用量
@@ -125,10 +141,19 @@ type AnthropicSSEEvent struct {
 // AnthropicSSEDelta content_block_delta 事件 data
 type AnthropicSSEDelta struct {
 	Type  string `json:"type"`
+	Index int    `json:"index"`
 	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type         string `json:"type"`
+		Text         string `json:"text"`
+		PartialJSON  string `json:"partial_json"`
 	} `json:"delta"`
+}
+
+// AnthropicSSEBlockStart content_block_start 事件 data
+type AnthropicSSEBlockStart struct {
+	Type         string           `json:"type"`
+	Index        int              `json:"index"`
+	ContentBlock AnthropicContent `json:"content_block"`
 }
 
 // AnthropicSSEStop message_stop 事件 data
@@ -139,18 +164,7 @@ type AnthropicSSEStop struct {
 // --- 转换函数 ---
 
 // AnthropicRequestToUnified 将 Anthropic 请求转为内部统一格式
-// 检测高级特性（tools/thinking），返回 ErrUnsupportedFeature
 func AnthropicRequestToUnified(req *AnthropicReq) (*models.UnifiedRequest, error) {
-	// 忽略不支持的高级特性，只处理基础文本对话
-	// tools/thinking 等字段会被静默丢弃，客户端发送的文本消息正常处理
-	for _, msg := range req.Messages {
-		for _, block := range msg.Content {
-			if block.Type != "text" && block.Type != "" {
-				slog.Warn("ignoring_unsupported_content_block", "type", block.Type)
-			}
-		}
-	}
-
 	unified := &models.UnifiedRequest{
 		Model:       req.Model,
 		System:      req.GetSystem(),
@@ -161,15 +175,61 @@ func AnthropicRequestToUnified(req *AnthropicReq) (*models.UnifiedRequest, error
 		Stream:      req.Stream,
 	}
 
+	if len(req.Tools) > 0 {
+		unified.Tools = req.Tools
+	}
+	if len(req.ToolChoice) > 0 {
+		unified.ToolChoice = req.ToolChoice
+	}
+	if len(req.Thinking) > 0 {
+		slog.Warn("ignoring_unsupported_thinking")
+	}
+
 	for _, msg := range req.Messages {
+		role := msg.Role
+		if role == "developer" {
+			role = "user"
+		}
+		if len(msg.Content) == 0 {
+			continue
+		}
+		// 单文本块：使用旧格式
+		if len(msg.Content) == 1 && msg.Content[0].Type == "text" {
+			unified.Messages = append(unified.Messages, models.UnifiedMessage{
+				Role:    role,
+				Content: msg.Content[0].Text,
+			})
+			continue
+		}
+		// 多块消息：使用 ContentBlocks
+		um := models.UnifiedMessage{Role: role}
 		for _, block := range msg.Content {
-			if block.Type == "text" || block.Type == "" {
-				unified.Messages = append(unified.Messages, models.UnifiedMessage{
-					Role:    msg.Role,
-					Content: block.Text,
+			switch block.Type {
+			case "text":
+				um.Content = block.Text
+				um.ContentBlocks = append(um.ContentBlocks, models.ContentBlock{
+					Type: "text",
+					Text: block.Text,
 				})
+			case "tool_use":
+				um.ContentBlocks = append(um.ContentBlocks, models.ContentBlock{
+					Type:  "tool_use",
+					ID:    block.ID,
+					Name:  block.Name,
+					Input: block.Input,
+				})
+			case "tool_result":
+				um.ContentBlocks = append(um.ContentBlocks, models.ContentBlock{
+					Type:      "tool_result",
+					ToolUseID: block.ToolUseID,
+					Content:   block.Content,
+					IsError:   block.IsError,
+				})
+			default:
+				slog.Warn("ignoring_unsupported_content_block", "type", block.Type)
 			}
 		}
+		unified.Messages = append(unified.Messages, um)
 	}
 
 	return unified, nil
@@ -177,39 +237,90 @@ func AnthropicRequestToUnified(req *AnthropicReq) (*models.UnifiedRequest, error
 
 // AnthropicResponseFromUnified 将内部统一格式转为 Anthropic 响应
 func AnthropicResponseFromUnified(resp *models.UnifiedResponse) *AnthropicResp {
-	return &AnthropicResp{
-		ID:    resp.ID,
-		Model: resp.Model,
-		Role:  resp.Role,
-		Content: []AnthropicContent{
-			{Type: "text", Text: resp.Content},
-		},
+	anth := &AnthropicResp{
+		ID:         resp.ID,
+		Model:      resp.Model,
+		Role:       resp.Role,
 		StopReason: mapAnthropicStopReason(resp.StopReason),
 		Usage: AnthropicUsage{
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 		},
 	}
+
+	if resp.Content != "" {
+		anth.Content = append(anth.Content, AnthropicContent{Type: "text", Text: resp.Content})
+	}
+	for _, tc := range resp.ToolCalls {
+		anth.Content = append(anth.Content, AnthropicContent{
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: json.RawMessage(tc.Function.Arguments),
+		})
+	}
+
+	return anth
 }
 
 // AnthropicStreamEventToUnified 将 Anthropic SSE 原始事件转为 UnifiedStreamEvent 切片
 func AnthropicStreamEventToUnified(eventType string, data []byte) ([]*models.UnifiedStreamEvent, error) {
 	switch eventType {
+	case "content_block_start":
+		var start AnthropicSSEBlockStart
+		if err := json.Unmarshal(data, &start); err != nil {
+			return nil, err
+		}
+		if start.ContentBlock.Type == "tool_use" {
+			args := ""
+			if len(start.ContentBlock.Input) > 0 {
+				args = string(start.ContentBlock.Input)
+			}
+			return []*models.UnifiedStreamEvent{{
+				Type: models.StreamEventDelta,
+				ToolCalls: []models.ToolCallDelta{{
+					Index: start.Index,
+					ID:    start.ContentBlock.ID,
+					Type:  "function",
+					Function: &models.ToolCallFunctionDelta{
+						Name:      start.ContentBlock.Name,
+						Arguments: args,
+					},
+				}},
+			}}, nil
+		}
+		return nil, nil
+
 	case "content_block_delta":
 		var delta AnthropicSSEDelta
 		if err := json.Unmarshal(data, &delta); err != nil {
 			return nil, err
 		}
-		if delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
-			return []*models.UnifiedStreamEvent{{
-				Type:    models.StreamEventDelta,
-				Content: delta.Delta.Text,
-			}}, nil
+		switch delta.Delta.Type {
+		case "text_delta":
+			if delta.Delta.Text != "" {
+				return []*models.UnifiedStreamEvent{{
+					Type:    models.StreamEventDelta,
+					Content: delta.Delta.Text,
+				}}, nil
+			}
+		case "input_json_delta":
+			if delta.Delta.PartialJSON != "" {
+				return []*models.UnifiedStreamEvent{{
+					Type: models.StreamEventDelta,
+					ToolCalls: []models.ToolCallDelta{{
+						Index: delta.Index,
+						Function: &models.ToolCallFunctionDelta{
+							Arguments: delta.Delta.PartialJSON,
+						},
+					}},
+				}}, nil
+			}
 		}
-		return nil, nil // 非文本 delta 忽略
+		return nil, nil
 
 	case "content_block_stop":
-		return nil, nil // 忽略
+		return nil, nil
 
 	case "message_delta":
 		var msgDelta struct {
@@ -263,6 +374,8 @@ func mapAnthropicStopReason(reason string) string {
 		return "stop"
 	case "max_tokens":
 		return "length"
+	case "tool_use":
+		return "tool_calls"
 	default:
 		return reason
 	}

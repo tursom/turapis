@@ -3,7 +3,7 @@ import { fetchProviders, createProvider, updateProvider, deleteProvider, fetchSi
 import type { Provider, Site } from '../api/types'
 import Modal from '../components/Modal'
 
-const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true }
+const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]' }
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -27,7 +27,7 @@ export default function Providers() {
   useEffect(() => { load() }, [])
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setCreateMode('manual'); setShowModal(true); fetchSites().then(setSitesList).catch(() => {}) }
-  const openEdit = (p: Provider) => { setEditing(p); setForm({ name: p.name, base_url: p.base_url, api_key: p.api_key, protocol: p.protocol, auth_mode: p.auth_mode, priority: p.priority, enabled: p.enabled }); setShowModal(true) }
+  const openEdit = (p: Provider) => { setEditing(p); setForm({ name: p.name, base_url: p.base_url, api_key: p.api_key, protocol: p.protocol, auth_mode: p.auth_mode, priority: p.priority, enabled: p.enabled, supported_tools: p.supported_tools || '[]' }); setShowModal(true) }
 
   const handleSave = async () => {
     try {
@@ -77,7 +77,7 @@ export default function Providers() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #f0f0f0', textAlign: 'left' }}>
-              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>操作</th>
+              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -87,6 +87,7 @@ export default function Providers() {
                 <td style={{ padding: 8 }}>{p.protocol}</td>
                 <td style={{ padding: 8 }}>{p.priority}</td>
                 <td style={{ padding: 8 }}>{p.enabled ? '✅' : '❌'}</td>
+                <td style={{ padding: 8, fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.supported_tools || '[]'}</td>
                 <td style={{ padding: 8 }}>
                   <button onClick={() => openEdit(p)} style={{ marginRight: 8 }}>编辑</button>
                   <button onClick={() => handleDelete(p.id)} style={{ color: '#ff4d4f' }}>删除</button>
@@ -112,6 +113,7 @@ export default function Providers() {
             <label>协议 <select value={form.protocol} onChange={e => setForm({...form, protocol: e.target.value as 'openai' | 'anthropic'})}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
             <label>优先级 <input type="number" value={form.priority} onChange={e => setForm({...form, priority: +e.target.value})} /></label>
             <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({...form, enabled: e.target.checked})} /> 启用</label>
+            <label>支持的工具 <input value={form.supported_tools} onChange={e => setForm({...form, supported_tools: e.target.value})} placeholder='JSON array, e.g. ["web_search","code_interpreter"]' style={{ width: '100%' }} /></label>
             <button onClick={handleSave} style={{ padding: '8px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>保存</button>
           </div>
         ) : (

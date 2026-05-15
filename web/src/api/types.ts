@@ -7,6 +7,7 @@ export interface Provider {
   priority: number
   enabled: boolean
   auth_mode: string
+  supported_tools: string
   created_at: string
   updated_at: string
 }

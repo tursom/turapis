@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/tursom/turapis/internal/models"
 	"github.com/tursom/turapis/internal/translate"
@@ -56,6 +59,22 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+type streamState struct {
+	model          string
+	inTok          int
+	outTok         int
+	outputIdx      int
+	msgItemID      string
+	gotText        bool
+	textBuf        string
+	activeCallID   string
+	activeCallName string
+	activeCallNS   string
+	argBuf         string
+	argFlushed     int
+	completedCalls []map[string]interface{}
+}
+
 func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
 	streamResult, err := g.router.RouteStream(r.Context(), unified)
 	if err != nil {
@@ -71,6 +90,12 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		c.SetProvider(streamResult.ProviderName)
 	}
 
+	state := &streamState{
+		model:     unified.Model,
+		msgItemID: "msg_turapis_" + fmt.Sprint(time.Now().UnixNano()),
+	}
+	respID := "resp_turapis_" + fmt.Sprint(time.Now().UnixNano())
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -81,10 +106,12 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// 发送初始生命周期事件
-	writeSSEEvent(w, flusher, "response.created", `{"response":{"id":"resp_turapis","status":"in_progress"}}`)
-	writeSSEEvent(w, flusher, "response.in_progress", `{}`)
+	respObj := map[string]interface{}{"id": respID, "status": "in_progress"}
+	writeResponsesEvent(w, flusher, "response.created", map[string]interface{}{"response": respObj})
+	writeResponsesEvent(w, flusher, "response.in_progress", map[string]interface{}{"response": respObj})
 
+	msgAdded := false
+	sentDone := false
 	for event := range streamResult.Events {
 		select {
 		case <-r.Context().Done():
@@ -95,22 +122,235 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		switch event.Type {
 		case models.StreamEventUsage:
 			if event.Usage != nil {
+				state.inTok = event.Usage.InputTokens
+				state.outTok = event.Usage.OutputTokens
 				if c := collectorFromContext(r.Context()); c != nil {
 					c.SetTokens(event.Usage.InputTokens, event.Usage.OutputTokens)
 				}
 			}
 		case models.StreamEventDelta:
-			writeSSEEvent(w, flusher, "response.text.delta", `{"delta":`+mustMarshal(event.Content)+`}`)
+			if event.Content != "" {
+				state.gotText = true
+				state.textBuf += event.Content
+				if !msgAdded {
+					msgAdded = true
+					writeResponsesEvent(w, flusher, "response.output_item.added", map[string]interface{}{
+						"output_index": state.outputIdx,
+						"item": map[string]interface{}{
+							"type":    "message",
+							"id":      state.msgItemID,
+							"role":    "assistant",
+							"status":  "in_progress",
+							"content": []interface{}{},
+						},
+					})
+					writeResponsesEvent(w, flusher, "response.content_part.added", map[string]interface{}{
+						"output_index":  state.outputIdx,
+						"content_index": 0,
+						"part": map[string]interface{}{
+							"type": "output_text",
+							"text": "",
+						},
+					})
+				}
+				writeResponsesEvent(w, flusher, "response.text.delta", map[string]interface{}{
+					"item_id":       state.msgItemID,
+					"output_index":  state.outputIdx,
+					"content_index": 0,
+					"delta":         event.Content,
+				})
+			}
+		for _, tc := range event.ToolCalls {
+			if tc.ID != "" && tc.Function != nil {
+					if !msgAdded {
+						msgAdded = true
+						state.textBuf = "Running tool: " + tc.Function.Name
+						writeResponsesEvent(w, flusher, "response.output_item.added", map[string]interface{}{
+							"output_index": state.outputIdx,
+							"item": map[string]interface{}{
+								"type":    "message",
+								"id":      state.msgItemID,
+								"role":    "assistant",
+								"status":  "in_progress",
+								"content": []interface{}{},
+							},
+						})
+						writeResponsesEvent(w, flusher, "response.content_part.added", map[string]interface{}{
+							"output_index":  state.outputIdx,
+							"content_index": 0,
+							"part":          map[string]interface{}{"type": "output_text", "text": ""},
+						})
+						writeResponsesEvent(w, flusher, "response.text.delta", map[string]interface{}{
+							"item_id": state.msgItemID, "output_index": state.outputIdx,
+							"content_index": 0, "delta": state.textBuf,
+						})
+						writeResponsesEvent(w, flusher, "response.text.done", map[string]interface{}{
+							"output_index": state.outputIdx, "content_index": 0, "text": state.textBuf,
+						})
+						writeResponsesEvent(w, flusher, "response.content_part.done", map[string]interface{}{
+							"output_index": state.outputIdx, "content_index": 0,
+							"part": map[string]interface{}{"type": "output_text", "text": state.textBuf},
+						})
+						writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+							"output_index": state.outputIdx,
+							"item": map[string]interface{}{
+								"type": "message", "id": state.msgItemID, "role": "assistant", "status": "completed",
+								"content": []map[string]interface{}{{"type": "output_text", "text": state.textBuf}},
+							},
+						})
+						state.outputIdx++
+					}
+					state.activeCallID = tc.ID
+					state.activeCallName, state.activeCallNS = splitNamespaceName(tc.Function.Name)
+					state.argBuf = tc.Function.Arguments
+					state.argFlushed = 0
+					item := map[string]interface{}{
+						"type":      "function_call",
+						"call_id":   tc.ID,
+						"name":      state.activeCallName,
+						"arguments": "",
+						"status":    "in_progress",
+					}
+					if state.activeCallNS != "" {
+						item["namespace"] = state.activeCallNS
+					}
+					writeResponsesEvent(w, flusher, "response.output_item.added", map[string]interface{}{
+						"output_index": state.outputIdx,
+						"item":         item,
+					})
+					flushArgDelta(w, flusher, state, false)
+				} else if tc.Function != nil && tc.Function.Arguments != "" {
+					state.argBuf += tc.Function.Arguments
+					flushArgDelta(w, flusher, state, false)
+				}
+			}
+			if event.StopReason != "" && state.activeCallID != "" {
+				state.activeCallName, state.argBuf = normalizeCodexTool(state.activeCallName, state.argBuf)
+				flushArgDelta(w, flusher, state, true)
+				writeResponsesEvent(w, flusher, "response.function_call_arguments.done", map[string]interface{}{
+					"item_id":      state.activeCallID,
+					"output_index": state.outputIdx,
+					"arguments":    state.argBuf,
+				})
+				item := map[string]interface{}{
+						"type":      "function_call",
+						"id":        state.activeCallID,
+						"name":      state.activeCallName,
+						"arguments": state.argBuf,
+						"status":    "completed",
+					}
+					if state.activeCallNS != "" {
+						item["namespace"] = state.activeCallNS
+					}
+			writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+					"output_index": state.outputIdx,
+					"item": map[string]interface{}{
+						"type":      "function_call",
+						"call_id":   state.activeCallID,
+						"name":      state.activeCallName,
+						"arguments": state.argBuf,
+						"status":    "completed",
+					},
+				})
+				if state.activeCallNS != "" {
+					item["namespace"] = state.activeCallNS
+				}
+				state.completedCalls = append(state.completedCalls, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   state.activeCallID,
+					"name":      state.activeCallName,
+					"arguments": state.argBuf,
+				})
+				state.outputIdx++
+				state.activeCallID = ""
+				state.activeCallName = ""
+				state.activeCallNS = ""
+				state.argBuf = ""
+				state.argFlushed = 0
+			}
 		case models.StreamEventStop:
-			writeSSEEvent(w, flusher, "response.text.done", `{}`)
-			writeSSEEvent(w, flusher, "response.output_item.done", `{}`)
-			writeSSEEvent(w, flusher, "response.completed", `{"response":{}}`)
+			if state.activeCallID != "" {
+				state.activeCallName, state.argBuf = normalizeCodexTool(state.activeCallName, state.argBuf)
+				flushArgDelta(w, flusher, state, true)
+				writeResponsesEvent(w, flusher, "response.function_call_arguments.done", map[string]interface{}{
+					"item_id": state.activeCallID, "output_index": state.outputIdx, "arguments": state.argBuf,
+				})
+				item2 := map[string]interface{}{
+					"type": "function_call", "id": state.activeCallID,
+					"name": state.activeCallName, "arguments": state.argBuf, "status": "completed",
+				}
+				if state.activeCallNS != "" {
+					item2["namespace"] = state.activeCallNS
+				}
+				writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+					"output_index": state.outputIdx,
+					"item":         item2,
+				})
+				state.outputIdx++
+			}
+			if state.gotText && !sentDone {
+				writeResponsesEvent(w, flusher, "response.text.done", map[string]interface{}{
+					"output_index":  0,
+					"content_index": 0,
+					"text":          state.textBuf,
+				})
+				writeResponsesEvent(w, flusher, "response.content_part.done", map[string]interface{}{
+					"output_index":  0,
+					"content_index": 0,
+					"part": map[string]interface{}{
+						"type": "output_text",
+						"text": state.textBuf,
+					},
+				})
+				writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+					"output_index": 0,
+					"item": map[string]interface{}{
+						"type":   "message",
+						"id":     state.msgItemID,
+						"role":   "assistant",
+						"status": "completed",
+						"content": []map[string]interface{}{{
+							"type": "output_text",
+							"text": state.textBuf,
+						}},
+					},
+				})
+				sentDone = true
+			}
+			writeResponsesEvent(w, flusher, "response.completed", buildCompleted(state, respID))
 			return
 		case models.StreamEventError:
-			writeSSEEvent(w, flusher, "error", `{"error":{"message":`+mustMarshal(event.Error.Error())+`}}`)
+			writeResponsesEvent(w, flusher, "error", map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": event.Error.Error(),
+				},
+			})
 			return
 		}
 	}
+
+	select {
+	case <-r.Context().Done():
+		return
+	default:
+	}
+	if state.gotText && !sentDone {
+		writeResponsesEvent(w, flusher, "response.text.done", map[string]interface{}{
+			"output_index": 0, "content_index": 0, "text": state.textBuf,
+		})
+		writeResponsesEvent(w, flusher, "response.content_part.done", map[string]interface{}{
+			"output_index": 0, "content_index": 0,
+			"part": map[string]interface{}{"type": "output_text", "text": state.textBuf},
+		})
+		writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+			"output_index": 0,
+			"item": map[string]interface{}{
+				"type": "message", "id": state.msgItemID, "role": "assistant", "status": "completed",
+				"content": []map[string]interface{}{{"type": "output_text", "text": state.textBuf}},
+			},
+		})
+	}
+	writeResponsesEvent(w, flusher, "response.completed", buildCompleted(state, respID))
 }
 
 func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event, data string) {
@@ -119,7 +359,83 @@ func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event, data stri
 	flusher.Flush()
 }
 
+func writeResponsesEvent(w http.ResponseWriter, flusher http.Flusher, event string, fields map[string]interface{}) {
+	fields["type"] = event
+	payload, _ := json.Marshal(fields)
+	w.Write([]byte("event: " + event + "\n"))
+	w.Write([]byte("data: " + string(payload) + "\n\n"))
+	flusher.Flush()
+}
+
 func mustMarshal(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func buildCompleted(state *streamState, respID string) map[string]interface{} {
+	resp := map[string]interface{}{
+		"id":     respID,
+		"model":  state.model,
+		"usage": map[string]interface{}{
+			"input_tokens":  state.inTok,
+			"output_tokens": state.outTok,
+			"total_tokens":  state.inTok + state.outTok,
+		},
+		"status": "completed",
+	}
+	if len(state.completedCalls) > 0 {
+		resp["output"] = state.completedCalls
+	}
+	return map[string]interface{}{"response": resp}
+}
+
+func normalizeCodexTool(name, args string) (string, string) {
+	if name == "exec_command" {
+		var cmd struct {
+			Cmd     string `json:"cmd"`
+			Workdir string `json:"workdir"`
+		}
+		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Cmd == "" {
+			return name, args
+		}
+		shellCmd := []string{"bash", "-lc", cmd.Cmd}
+		if cmd.Workdir != "" {
+			shellCmd = []string{"bash", "-lc", "cd " + cmd.Workdir + " && " + cmd.Cmd}
+		}
+		newArgs, _ := json.Marshal(map[string]interface{}{
+			"command":   shellCmd,
+			"timeout":   30000,
+		})
+		return "shell", string(newArgs)
+	}
+	return name, args
+}
+
+func flushArgDelta(w http.ResponseWriter, flusher http.Flusher, state *streamState, force bool) {
+	if state.argFlushed >= len(state.argBuf) {
+		return
+	}
+	if !force {
+		return
+	}
+	delta := state.argBuf[state.argFlushed:]
+	writeResponsesEvent(w, flusher, "response.function_call_arguments.delta", map[string]interface{}{
+		"item_id":      state.activeCallID,
+		"output_index": state.outputIdx,
+		"delta":        delta,
+	})
+	state.argFlushed = len(state.argBuf)
+}
+
+func splitNamespaceName(fullName string) (name, ns string) {
+	idx := strings.LastIndex(fullName, "__")
+	if idx < 0 {
+		return fullName, ""
+	}
+	if idx == 0 {
+		return fullName[2:], ""
+	}
+	ns = fullName[:idx+2]
+	name = fullName[idx+2:]
+	return
 }

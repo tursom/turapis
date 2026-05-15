@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/tursom/turapis/internal/models"
 	"github.com/tursom/turapis/internal/sse"
@@ -76,7 +78,6 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 		c.SetProvider(streamResult.ProviderName)
 	}
 
-	// 流式输出 Anthropic SSE 格式
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -87,13 +88,41 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
-	// Anthropic SSE 协议要求先发 message_start + content_block_start
+	// 发送 message_start
 	sse.WriteSSEData(w, `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"`+unified.Model+`","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
 	flusher.Flush()
-	sse.WriteSSEData(w, `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
-	flusher.Flush()
 
-	blockStarted := false
+	blockIndex := 0
+	toolBlockIndices := make(map[string]int) // tool call ID -> block index
+	var activeBlockType string               // "text" or "tool_use"
+	anyBlock := false
+
+	closeBlock := func() {
+		if !anyBlock || activeBlockType == "" {
+			return
+		}
+		// 找到当前活跃的 block index
+		idx := blockIndex - 1
+		sse.WriteSSEData(w, fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, idx))
+		flusher.Flush()
+		activeBlockType = ""
+	}
+
+	sendContentBlockStart := func(blockType, id, name string) {
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"%s"`, blockIndex, blockType))
+		if id != "" {
+			b.WriteString(fmt.Sprintf(`,"id":"%s"`, id))
+		}
+		if name != "" {
+			b.WriteString(fmt.Sprintf(`,"name":"%s"`, name))
+		}
+		b.WriteString("}}")
+		sse.WriteSSEData(w, b.String())
+		flusher.Flush()
+		blockIndex++
+	}
+
 	for event := range streamResult.Events {
 		select {
 		case <-r.Context().Done():
@@ -103,29 +132,85 @@ func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, u
 
 		switch event.Type {
 		case models.StreamEventDelta:
+			// 处理 stop_reason
 			if event.StopReason != "" {
-				sse.WriteSSEData(w, `{"type":"content_block_stop","index":0}`)
+				closeBlock()
+				anyBlock = false
+				sse.WriteSSEData(w, `{"type":"message_delta","delta":{"stop_reason":"`+mapStopReasonForSSE(event.StopReason)+`"},"usage":{"output_tokens":0}}`)
 				flusher.Flush()
-				sse.WriteSSEData(w, `{"type":"message_delta","delta":{"stop_reason":"`+event.StopReason+`"},"usage":{"output_tokens":0}}`)
-				flusher.Flush()
-			} else {
-				sse.WriteSSEData(w, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+escapeJSON(event.Content)+`"}}`)
-				flusher.Flush()
+				continue
 			}
-			blockStarted = true
+
+			// 处理文本 delta
+			if event.Content != "" {
+				if activeBlockType != "text" {
+					closeBlock()
+					sendContentBlockStart("text", "", "")
+					activeBlockType = "text"
+				}
+				sse.WriteSSEData(w, fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":"%s"}}`, blockIndex-1, escapeJSON(event.Content)))
+				flusher.Flush()
+				anyBlock = true
+			}
+
+			// 处理 tool call delta
+			for _, tc := range event.ToolCalls {
+				if tc.ID != "" && tc.Function != nil {
+					// 新的 tool_use 块开始
+					if activeBlockType != "" {
+						closeBlock()
+					}
+					sendContentBlockStart("tool_use", tc.ID, tc.Function.Name)
+					activeBlockType = "tool_use"
+					anyBlock = true
+					idx := blockIndex - 1
+					toolBlockIndices[tc.ID] = idx
+					// 如果有初始 arguments，发送 input_json_delta
+					if tc.Function.Arguments != "" {
+						sse.WriteSSEData(w, fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":"%s"}}`, idx, escapeJSON(tc.Function.Arguments)))
+						flusher.Flush()
+					}
+				} else if tc.Function != nil && tc.Function.Arguments != "" {
+					// 已有 tool_use 块的 arguments delta
+					idx := blockIndex - 1
+					// 尝试从已注册的 toolBlockIndices 中查找
+					// 默认使用最后一个 active block
+					sse.WriteSSEData(w, fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":"%s"}}`, idx, escapeJSON(tc.Function.Arguments)))
+					flusher.Flush()
+				}
+			}
+
 		case models.StreamEventStop:
-			if blockStarted {
-				sse.WriteSSEData(w, `{"type":"content_block_stop","index":0}`)
-				flusher.Flush()
-			}
+			closeBlock()
+			anyBlock = false
 			sse.WriteSSEData(w, `{"type":"message_stop"}`)
 			flusher.Flush()
 			return
+
 		case models.StreamEventError:
 			sse.WriteSSEError(w, event.Error)
 			flusher.Flush()
 			return
 		}
+	}
+
+	// 通道提前关闭（上游断连等），发送 message_stop 作为兜底
+	select {
+	case <-r.Context().Done():
+		return
+	default:
+	}
+	closeBlock()
+	sse.WriteSSEData(w, `{"type":"message_stop"}`)
+	flusher.Flush()
+}
+
+func mapStopReasonForSSE(reason string) string {
+	switch reason {
+	case "tool_calls":
+		return "tool_use"
+	default:
+		return reason
 	}
 }
 

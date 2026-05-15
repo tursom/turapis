@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -126,12 +127,20 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 			}
 		}
 	}
+	var supportedTools []string
+	if p.SupportedTools != "" {
+		json.Unmarshal([]byte(p.SupportedTools), &supportedTools)
+	}
 	var prov provider.Provider
 	switch p.Protocol {
 	case "openai":
-		prov = openai.New(p.Name, p.BaseURL, apiKey)
+		op := openai.New(p.Name, p.BaseURL, apiKey, supportedTools)
+		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
+			op.SetSearXNG(searxngURL)
+		}
+		prov = op
 	case "anthropic":
-		prov = anthropic.New(p.Name, p.BaseURL, apiKey)
+		prov = anthropic.New(p.Name, p.BaseURL, apiKey, supportedTools)
 	default:
 		return
 	}

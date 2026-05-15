@@ -41,7 +41,7 @@ func (e *UpstreamError) Error() string {
 func (e *UpstreamError) Unwrap() error { return e.Err }
 
 // ErrUnsupportedFeature 不支持的高级特性
-var ErrUnsupportedFeature = errors.New("unsupported feature: tool_use/multimodal/thinking not supported in v1")
+var ErrUnsupportedFeature = errors.New("unsupported feature: multimodal/thinking not supported")
 
 // ClassifyError 将上游错误分类为 ErrorCategory
 func ClassifyError(err error) ErrorCategory {
