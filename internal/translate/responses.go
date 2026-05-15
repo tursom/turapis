@@ -172,7 +172,65 @@ func ResponsesRequestToUnified(req *ResponsesReq) (*models.UnifiedRequest, error
 		unified.Messages = append(unified.Messages, um)
 	}
 
+	// 合并连续的 assistant tool_use 消息，避免 OpenAI Chat Completions 格式中
+	// 出现 tool_calls 消息之间被其他非 tool 消息隔开（DeepSeek 严格校验）
+	unified.Messages = mergeConsecutiveToolUses(unified.Messages)
+
 	return unified, nil
+}
+
+// mergeConsecutiveToolUses 合并相邻的 assistant tool_use / text 消息
+// 规则:
+//   1. 连续 tool_use → 合并 tool_use 列表
+//   2. tool_use 后跟纯文本 assistant → 吸收文本到 tool_use 消息
+// 目的是避免 OpenAI Chat Completions 格式中 tool_calls 和 tool 消息被非 tool 消息隔开
+func mergeConsecutiveToolUses(msgs []models.UnifiedMessage) []models.UnifiedMessage {
+	if len(msgs) <= 1 {
+		return msgs
+	}
+	merged := make([]models.UnifiedMessage, 0, len(msgs))
+	i := 0
+	for i < len(msgs) {
+		m := msgs[i]
+		if m.Role == "assistant" && len(m.ContentBlocks) > 0 && isOnlyToolUses(m) {
+			combined := m
+			j := i + 1
+			// 吸收后续的 tool_use 消息
+			for j < len(msgs) && msgs[j].Role == "assistant" && len(msgs[j].ContentBlocks) > 0 && isOnlyToolUses(msgs[j]) {
+				combined.ContentBlocks = append(combined.ContentBlocks, msgs[j].ContentBlocks...)
+				j++
+			}
+			// 吸收后续的纯文本 assistant 消息
+			for j < len(msgs) && msgs[j].Role == "assistant" && isTextOnlyAssistant(msgs[j]) {
+				if combined.Content == "" {
+					combined.Content = msgs[j].Content
+				}
+				j++
+			}
+			merged = append(merged, combined)
+			i = j
+		} else {
+			merged = append(merged, m)
+			i++
+		}
+	}
+	return merged
+}
+
+func isOnlyToolUses(m models.UnifiedMessage) bool {
+	if m.Content != "" {
+		return false
+	}
+	for _, b := range m.ContentBlocks {
+		if b.Type != "tool_use" {
+			return false
+		}
+	}
+	return true
+}
+
+func isTextOnlyAssistant(m models.UnifiedMessage) bool {
+	return len(m.ContentBlocks) == 0 && m.Content != ""
 }
 
 func buildUnifiedMsgFromResponses(msg ResponseInputMsg) models.UnifiedMessage {

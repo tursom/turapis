@@ -217,3 +217,118 @@ func TestResponsesStreamEventToUnified_TextDelta(t *testing.T) {
 		t.Errorf("expected content hello, got %q", ev.Content)
 	}
 }
+
+func TestMergeConsecutiveToolUses(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []models.UnifiedMessage
+		want []models.UnifiedMessage
+	}{
+		{
+			name: "single tool_use unchanged",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+			},
+		},
+		{
+			name: "two consecutive tool_uses merged",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2", Name: "shell"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{
+					{Type: "tool_use", ID: "c1", Name: "shell"},
+					{Type: "tool_use", ID: "c2", Name: "shell"},
+				}},
+			},
+		},
+		{
+			name: "three tool_uses merged, tool_result kept",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2", Name: "shell"}}},
+				{Role: "user", ContentBlocks: []models.ContentBlock{{Type: "tool_result", ToolUseID: "c1"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{
+					{Type: "tool_use", ID: "c1", Name: "shell"},
+					{Type: "tool_use", ID: "c2", Name: "shell"},
+				}},
+				{Role: "user", ContentBlocks: []models.ContentBlock{{Type: "tool_result", ToolUseID: "c1"}}},
+			},
+		},
+		{
+			name: "assistant with text not merged with tool_use",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", Content: "some text", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", Content: "some text", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2"}}},
+			},
+		},
+		{
+			name: "assistant with text not merged with tool_use",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", Content: "some text", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", Content: "some text", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1"}}},
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c2"}}},
+			},
+		},
+		{
+			name: "tool_use followed by text assistant merged",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+				{Role: "assistant", Content: "Relevant code in..."},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", Content: "Relevant code in...", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+			},
+		},
+		{
+			name: "tool_use + text + tool_result: text absorbed",
+			in: []models.UnifiedMessage{
+				{Role: "assistant", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+				{Role: "assistant", Content: "Looking at file..."},
+				{Role: "user", ContentBlocks: []models.ContentBlock{{Type: "tool_result", ToolUseID: "c1"}}},
+			},
+			want: []models.UnifiedMessage{
+				{Role: "assistant", Content: "Looking at file...", ContentBlocks: []models.ContentBlock{{Type: "tool_use", ID: "c1", Name: "shell"}}},
+				{Role: "user", ContentBlocks: []models.ContentBlock{{Type: "tool_result", ToolUseID: "c1"}}},
+			},
+		},
+		{
+			name: "empty input unchanged",
+			in:   []models.UnifiedMessage{},
+			want: []models.UnifiedMessage{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeConsecutiveToolUses(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len mismatch: got %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i].Role != tt.want[i].Role {
+					t.Errorf("[%d] role mismatch: got %q, want %q", i, got[i].Role, tt.want[i].Role)
+				}
+				if got[i].Content != tt.want[i].Content {
+					t.Errorf("[%d] content mismatch: got %q, want %q", i, got[i].Content, tt.want[i].Content)
+				}
+				if len(got[i].ContentBlocks) != len(tt.want[i].ContentBlocks) {
+					t.Errorf("[%d] blocks len mismatch: got %d, want %d", i, len(got[i].ContentBlocks), len(tt.want[i].ContentBlocks))
+				}
+			}
+		})
+	}
+}
