@@ -47,34 +47,33 @@ type RouteResult struct {
 // 1. 先查找 model_mappings 中该模型的专属映射
 // 2. 若找不到，使用全局默认链
 func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, error) {
-	// 尝试按模型查找
+	seen := map[string]bool{}
+	var providers []provider.Provider
+
+	// 1. 先查找 model_mappings 中该模型的专属映射
 	entries, err := r.store.GetPriorityChain(modelName)
-	if err == nil && len(entries) > 0 {
-		providers := make([]provider.Provider, 0, len(entries))
+	if err == nil {
 		for _, e := range entries {
 			p, ok := r.registry.Get(e.Provider.Name)
-			if ok {
+			if ok && !seen[p.Name()] {
 				providers = append(providers, p)
+				seen[p.Name()] = true
 			}
 		}
-		if len(providers) > 0 {
-			return providers, nil
+	}
+
+	// 2. 追加全局默认链（去重，排在专属映射之后）
+	defaultEntries, err := r.store.GetDefaultPriorityChain()
+	if err == nil {
+		for _, e := range defaultEntries {
+			p, ok := r.registry.Get(e.Provider.Name)
+			if ok && !seen[p.Name()] {
+				providers = append(providers, p)
+				seen[p.Name()] = true
+			}
 		}
 	}
 
-	// 回退到全局默认链
-	entries, err = r.store.GetDefaultPriorityChain()
-	if err != nil {
-		return nil, err
-	}
-
-	providers := make([]provider.Provider, 0, len(entries))
-	for _, e := range entries {
-		p, ok := r.registry.Get(e.Provider.Name)
-		if ok {
-			providers = append(providers, p)
-		}
-	}
 	return providers, nil
 }
 

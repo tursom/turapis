@@ -2,5 +2,8 @@ web/node_modules
 web/dist
 .omc
 .claude
+.codex
+.sisyphus
 .git
 *.md
+data

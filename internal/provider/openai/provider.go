@@ -628,6 +628,7 @@ func convertResponsesToOpenAI(items []json.RawMessage) json.RawMessage {
 			Name        string          `json:"name"`
 			Description string          `json:"description"`
 			Parameters  json.RawMessage `json:"parameters"`
+			Format      json.RawMessage `json:"format"`
 		}
 		if err := json.Unmarshal(item, &rt); err != nil {
 			slog.Warn("skipping_unparsable_tool", "index", len(result), "raw", string(item))
@@ -639,6 +640,17 @@ func convertResponsesToOpenAI(items []json.RawMessage) json.RawMessage {
 				slog.Info("skipping_web_search_tool_extracted_as_options",
 					"index", len(result), "fields", allFields,
 				)
+			} else if rt.Type == "custom" && rt.Name != "" {
+				oai := convertCustomTool(rt.Name, rt.Description, rt.Format)
+				if oai != nil {
+					result = append(result, oai)
+					slog.Info("converted_custom_tool_to_function", "name", rt.Name)
+				} else {
+					slog.Warn("skipping_non_function_tool_in_responses_format",
+						"type", rt.Type, "name", rt.Name, "index", len(result),
+						"fields", allFields, "raw", string(item),
+					)
+				}
 			} else {
 				slog.Warn("skipping_non_function_tool_in_responses_format",
 					"type", rt.Type, "name", rt.Name, "index", len(result),
@@ -666,6 +678,48 @@ func convertResponsesToOpenAI(items []json.RawMessage) json.RawMessage {
 	}
 	out, _ := json.Marshal(result)
 	return out
+}
+
+// convertCustomTool 将 codex 自定义工具（lark 语法格式）转为标准 OpenAI function
+// 例如 apply_patch: 把 lark 语法转成 string 参数 + 格式描述
+func convertCustomTool(name, description string, format json.RawMessage) json.RawMessage {
+	if name == "" {
+		return nil
+	}
+	var cf struct {
+		Type       string `json:"type"`
+		Syntax     string `json:"syntax"`
+		Definition string `json:"definition"`
+	}
+	if err := json.Unmarshal(format, &cf); err != nil || cf.Definition == "" {
+		return nil
+	}
+	desc := description
+	if desc == "" {
+		desc = fmt.Sprintf("Use the `%s` tool.", name)
+	}
+	desc += fmt.Sprintf("\n\nOutput format (must match exactly):\n```\n%s\n```", cf.Definition)
+
+	params := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"patch": map[string]interface{}{
+				"type":        "string",
+				"description": "The patch content following the format above",
+			},
+		},
+		"required": []string{"patch"},
+	}
+	oai := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        name,
+			"description": desc,
+			"parameters":  params,
+		},
+	}
+	b, _ := json.Marshal(oai)
+	return b
 }
 
 func flattenNamespaceContainers(items []json.RawMessage) []json.RawMessage {
