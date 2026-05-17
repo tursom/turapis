@@ -162,44 +162,6 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 			}
 		for _, tc := range event.ToolCalls {
 			if tc.ID != "" && tc.Function != nil {
-					if !msgAdded {
-						msgAdded = true
-						state.textBuf = "Running tool: " + tc.Function.Name
-						writeResponsesEvent(w, flusher, "response.output_item.added", map[string]interface{}{
-							"output_index": state.outputIdx,
-							"item": map[string]interface{}{
-								"type":    "message",
-								"id":      state.msgItemID,
-								"role":    "assistant",
-								"status":  "in_progress",
-								"content": []interface{}{},
-							},
-						})
-						writeResponsesEvent(w, flusher, "response.content_part.added", map[string]interface{}{
-							"output_index":  state.outputIdx,
-							"content_index": 0,
-							"part":          map[string]interface{}{"type": "output_text", "text": ""},
-						})
-						writeResponsesEvent(w, flusher, "response.text.delta", map[string]interface{}{
-							"item_id": state.msgItemID, "output_index": state.outputIdx,
-							"content_index": 0, "delta": state.textBuf,
-						})
-						writeResponsesEvent(w, flusher, "response.text.done", map[string]interface{}{
-							"output_index": state.outputIdx, "content_index": 0, "text": state.textBuf,
-						})
-						writeResponsesEvent(w, flusher, "response.content_part.done", map[string]interface{}{
-							"output_index": state.outputIdx, "content_index": 0,
-							"part": map[string]interface{}{"type": "output_text", "text": state.textBuf},
-						})
-						writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
-							"output_index": state.outputIdx,
-							"item": map[string]interface{}{
-								"type": "message", "id": state.msgItemID, "role": "assistant", "status": "completed",
-								"content": []map[string]interface{}{{"type": "output_text", "text": state.textBuf}},
-							},
-						})
-						state.outputIdx++
-					}
 					state.activeCallID = tc.ID
 					state.activeCallName, state.activeCallNS = splitNamespaceName(tc.Function.Name)
 					state.argBuf = tc.Function.Arguments
