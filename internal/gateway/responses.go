@@ -390,24 +390,6 @@ func buildCompleted(state *streamState, respID string) map[string]interface{} {
 }
 
 func normalizeCodexTool(name, args string) (string, string) {
-	if name == "exec_command" {
-		var cmd struct {
-			Cmd     string `json:"cmd"`
-			Workdir string `json:"workdir"`
-		}
-		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Cmd == "" {
-			return name, args
-		}
-		shellCmd := []string{"bash", "-lc", cmd.Cmd}
-		if cmd.Workdir != "" {
-			shellCmd = []string{"bash", "-lc", "cd " + cmd.Workdir + " && " + cmd.Cmd}
-		}
-		newArgs, _ := json.Marshal(map[string]interface{}{
-			"command":   shellCmd,
-			"timeout":   30000,
-		})
-		return "shell", string(newArgs)
-	}
 	return name, args
 }
 
