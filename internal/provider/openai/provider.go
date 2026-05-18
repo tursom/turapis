@@ -964,9 +964,32 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 				currentData.WriteString(strings.TrimPrefix(line, "data: "))
 			} else if line == "" && currentEvent != "" {
 				raw := strings.TrimSpace(currentData.String())
+				slog.Info("upstream_sse", "event", currentEvent, "data", raw)
 				currentData.Reset()
 				switch {
-				case currentEvent == "response.output_text.delta":
+				case currentEvent == "response.output_item.added":
+					var item struct {
+						Item struct {
+							Type string `json:"type"`
+							ID   string `json:"id"`
+							Name string `json:"name"`
+						} `json:"item"`
+					}
+					if json.Unmarshal([]byte(raw), &item) == nil && item.Item.Type == "function_call" && item.Item.Name != "" {
+						ch <- models.UnifiedStreamEvent{
+							Type: models.StreamEventDelta,
+							ToolCalls: []models.ToolCallDelta{{
+								ID:   item.Item.ID,
+								Type: "function",
+								Function: &models.ToolCallFunctionDelta{
+									Name: item.Item.Name,
+								},
+							}},
+						}
+					}
+				case currentEvent == "response.output_text.delta",
+					currentEvent == "response.output_text.annotation",
+					currentEvent == "response.reasoning_text.delta":
 					var d struct {
 						Delta      string `json:"delta"`
 						Annotation string `json:"annotation"`
@@ -978,6 +1001,43 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 						}
 						if text != "" {
 							ch <- models.UnifiedStreamEvent{Type: models.StreamEventDelta, Content: text}
+						}
+					}
+				case currentEvent == "response.function_call_arguments.done":
+					var fc struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+						CallID    string `json:"call_id"`
+					}
+					if json.Unmarshal([]byte(raw), &fc) == nil && fc.Name != "" {
+						ch <- models.UnifiedStreamEvent{
+							Type: models.StreamEventDelta,
+							ToolCalls: []models.ToolCallDelta{{
+								ID:   fc.CallID,
+								Type: "function",
+								Function: &models.ToolCallFunctionDelta{
+									Name:      fc.Name,
+									Arguments: fc.Arguments,
+								},
+							}},
+							StopReason: "tool_calls",
+						}
+					}
+				case currentEvent == "response.function_call_arguments.delta":
+					var fc struct {
+						CallID    string `json:"call_id"`
+						Delta     string `json:"delta"`
+					}
+					if json.Unmarshal([]byte(raw), &fc) == nil {
+						ch <- models.UnifiedStreamEvent{
+							Type: models.StreamEventDelta,
+							ToolCalls: []models.ToolCallDelta{{
+								ID:   fc.CallID,
+								Type: "function",
+								Function: &models.ToolCallFunctionDelta{
+									Arguments: fc.Delta,
+								},
+							}},
 						}
 					}
 				case strings.HasPrefix(currentEvent, "response.tool_call"):

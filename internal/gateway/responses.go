@@ -167,9 +167,20 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 			}
 		for _, tc := range event.ToolCalls {
 			if tc.ID != "" && tc.Function != nil {
-					state.activeCallID = tc.ID
-					state.activeCallName, state.activeCallNS = splitNamespaceName(tc.Function.Name)
-					state.argBuf = tc.Function.Arguments
+					isNew := state.activeCallID != tc.ID
+					if isNew {
+						state.activeCallID = tc.ID
+						state.argBuf = ""
+						state.argFlushed = 0
+					}
+					if tc.Function.Name != "" {
+						state.activeCallName, state.activeCallNS = splitNamespaceName(tc.Function.Name)
+					}
+					state.argBuf += tc.Function.Arguments
+					if !isNew && tc.Function.Name == "" {
+						flushArgDelta(w, flusher, state, false)
+						continue
+					}
 					state.argFlushed = 0
 					item := map[string]interface{}{
 						"type":      "function_call",
