@@ -86,6 +86,13 @@ export function discoverModels(providerId: number) {
   return request<DiscoverResult>(`/admin/providers/${providerId}/discover`, { method: 'POST' })
 }
 
+export function discoverAllModels(body?: { provider_ids?: number[] }) {
+  return request<{ results: Array<{ provider: string; count: number; error?: string }>; total: number }>('/admin/providers/batch-discover', {
+    method: 'POST',
+    body: body ? JSON.stringify(body) : undefined,
+  })
+}
+
 // --- Settings ---
 export function fetchSettings() {
   return request<{ default_priority_chain: string }>('/admin/settings')

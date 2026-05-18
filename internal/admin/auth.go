@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,26 +16,34 @@ import (
 )
 
 const (
-	sessionCookieName = "session"
-	sessionTTL        = 24 * time.Hour
-	rateWindow        = 1 * time.Minute
-	rateMaxAttempts   = 5
+	sessionCookieName     = "session"
+	defaultSessionTTL     = 30 * 24 * time.Hour
+	rateWindow            = 1 * time.Minute
+	rateMaxAttempts       = 5
 )
 
-// AdminAuth 管理后台鉴权（内存 session + 登录限速）
+// getSessionTTL 从环境变量读取 session 有效期，默认 30 天
+func getSessionTTL() time.Duration {
+	if v := os.Getenv("TURAPIS_SESSION_TTL"); v != "" {
+		if hours, err := strconv.Atoi(v); err == nil && hours > 0 {
+			return time.Duration(hours) * time.Hour
+		}
+	}
+	return defaultSessionTTL
+}
+
+// AdminAuth 管理后台鉴权（DB 持久化 session + 登录限速）
 type AdminAuth struct {
-	store      *config.Store
-	mu         sync.RWMutex
-	sessions   map[string]time.Time // token → expires_at
-	attempts   map[string][]time.Time // IP → recent attempts
-	cleanupCh  chan struct{}
+	store     *config.Store
+	mu        sync.Mutex
+	attempts  map[string][]time.Time // IP → recent attempts
+	cleanupCh chan struct{}
 }
 
 // NewAdminAuth 初始化鉴权系统
 func NewAdminAuth(store *config.Store) *AdminAuth {
 	a := &AdminAuth{
 		store:     store,
-		sessions:  make(map[string]time.Time),
 		attempts:  make(map[string][]time.Time),
 		cleanupCh: make(chan struct{}),
 	}
@@ -115,13 +125,18 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 密码正确 → 生成 session token
+	// 密码正确 → 生成 session token，持久化到 DB
 	token := randomToken(32)
-	expiresAt := now.Add(sessionTTL)
+	ttl := getSessionTTL()
+	expiresAt := now.Add(ttl)
 
-	a.mu.Lock()
-	a.sessions[token] = expiresAt
-	a.mu.Unlock()
+	if err := a.store.CreateSession(token, expiresAt); err != nil {
+		slog.Error("create_session", "err", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "session creation failed"})
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -129,7 +144,8 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Path:     "/",
-		MaxAge:   int(sessionTTL.Seconds()),
+		MaxAge:   int(ttl.Seconds()),
+		Expires:  expiresAt,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -140,9 +156,7 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 func (a *AdminAuth) Logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err == nil {
-		a.mu.Lock()
-		delete(a.sessions, cookie.Value)
-		a.mu.Unlock()
+		_ = a.store.DeleteSession(cookie.Value)
 	}
 
 	// 清除 Cookie
@@ -170,26 +184,26 @@ func (a *AdminAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		a.mu.RLock()
-		expiresAt, ok := a.sessions[cookie.Value]
-		a.mu.RUnlock()
-
-		if !ok || time.Now().After(expiresAt) {
-			if ok {
-				a.mu.Lock()
-				delete(a.sessions, cookie.Value)
-				a.mu.Unlock()
-			}
+		if !a.store.ValidateSession(cookie.Value) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 			return
 		}
 
-		// Sliding expiration: 刷新过期时间
-		a.mu.Lock()
-		a.sessions[cookie.Value] = time.Now().Add(sessionTTL)
-		a.mu.Unlock()
+		// Sliding expiration: refresh DB session expiry
+		ttl := getSessionTTL()
+		go a.store.RefreshSession(cookie.Value, ttl)
+
+		// Refresh browser cookie so its MaxAge also slides
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    cookie.Value,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Path:     "/",
+			MaxAge:   int(ttl.Seconds()),
+		})
 
 		next.ServeHTTP(w, r)
 	})
@@ -207,14 +221,12 @@ func (a *AdminAuth) cleanupLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			a.mu.Lock()
-			now := time.Now()
-			for token, expires := range a.sessions {
-				if now.After(expires) {
-					delete(a.sessions, token)
-				}
+			n, err := a.store.DeleteExpiredSessions()
+			if err != nil {
+				slog.Error("cleanup_sessions_failed", "err", err)
+			} else if n > 0 {
+				slog.Info("cleaned_expired_sessions", "count", n)
 			}
-			a.mu.Unlock()
 		case <-a.cleanupCh:
 			return
 		}

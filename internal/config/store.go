@@ -74,11 +74,18 @@ type Store struct {
 
 // NewStore 创建新的 Store，初始化数据库和表
 func NewStore(dbPath string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", dbPath)
+	var dsn string
+	if dbPath == ":memory:" {
+		dsn = "file::memory:?cache=shared"
+	} else {
+		dsn = fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", dbPath)
+	}
 	db, err := sqlx.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// 单连接避免 WAL 锁竞争（SQLite 串行化写入，多连接无意义）
+	db.SetMaxOpenConns(1)
 
 	// 备用路径：通过 PRAGMA 设置
 	for _, pragma := range []string{
@@ -104,7 +111,7 @@ func initSchema(db *sqlx.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS providers (
 	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    name        TEXT NOT NULL UNIQUE,
+	    name        TEXT NOT NULL,
 	    base_url    TEXT NOT NULL,
 	    api_key     TEXT NOT NULL,
 	    protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
@@ -172,6 +179,13 @@ func initSchema(db *sqlx.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_site_models_site_id ON site_models(site_id);
 	CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id ON provider_models(provider_id);
 
+	CREATE TABLE IF NOT EXISTS sessions (
+	    token      TEXT PRIMARY KEY,
+	    expires_at TEXT NOT NULL,
+	    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
 	CREATE TABLE IF NOT EXISTS access_logs (
 	    id            INTEGER PRIMARY KEY AUTOINCREMENT,
 	    timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
@@ -203,6 +217,68 @@ func initSchema(db *sqlx.DB) error {
 // Close 关闭数据库连接
 func (s *Store) Close() error {
 	return s.DB.Close()
+}
+
+// --- Session CRUD ---
+
+func (s *Store) CreateSession(token string, expiresAt time.Time) error {
+	_, err := s.DB.Exec(
+		"INSERT INTO sessions (token, expires_at) VALUES (?, ?)",
+		token, expiresAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteSession(token string) error {
+	_, err := s.DB.Exec("DELETE FROM sessions WHERE token = ?", token)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteExpiredSessions() (int64, error) {
+	result, err := s.DB.Exec(
+		"DELETE FROM sessions WHERE expires_at < datetime('now')",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+func (s *Store) ValidateSession(token string) bool {
+	var expiresAt string
+	err := s.DB.Get(&expiresAt, "SELECT expires_at FROM sessions WHERE token = ?", token)
+	if err != nil {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(t)
+}
+
+func (s *Store) RefreshSession(token string, ttls ...time.Duration) bool {
+	ttl := 24 * time.Hour
+	if len(ttls) > 0 {
+		ttl = ttls[0]
+	}
+	newExpires := time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	result, err := s.DB.Exec(
+		"UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > datetime('now')",
+		newExpires, token,
+	)
+	if err != nil {
+		return false
+	}
+	n, _ := result.RowsAffected()
+	return n > 0
 }
 
 // --- Provider CRUD ---
@@ -735,13 +811,13 @@ func (s *Store) CreateProviderFromSite(siteID int, nameOverride string, apiKey s
 	mappingsCreated := 0
 	for _, sm := range siteModels {
 		m := &ModelMapping{
-			ModelName:  sm.ModelName,
+			ModelName:  sm.ModelID,
 			ProviderID: provider.ID,
 			Priority:   100,
 			Enabled:    true,
 		}
 		if err := s.createModelMappingTx(tx, m); err != nil {
-			return nil, 0, fmt.Errorf("create mapping for %s: %w", sm.ModelName, err)
+			return nil, 0, fmt.Errorf("create mapping for %s: %w", sm.ModelID, err)
 		}
 		mappingsCreated++
 	}
@@ -784,7 +860,7 @@ func (s *Store) SeedBuiltinSites() error {
 			},
 		},
 		{
-			Site: Site{Name: "Codex (ChatGPT)", BaseURL: "https://api.openai.com", Protocol: "openai", AuthMode: "oauth", Enabled: true},
+			Site: 		Site{Name: "Codex (ChatGPT)", BaseURL: "https://api.openai.com/v1", Protocol: "openai", AuthMode: "oauth", Enabled: true},
 			Models: []struct{ ModelID, ModelName string }{
 				{"gpt-4o", "gpt-4o"},
 				{"gpt-4o-mini", "gpt-4o-mini"},

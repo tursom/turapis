@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchProviders, createProvider, updateProvider, deleteProvider, fetchSites, createProviderFromSite } from '../api/client'
+import { fetchProviders, createProvider, updateProvider, deleteProvider, fetchSites, createProviderFromSite, discoverAllModels } from '../api/client'
 import type { Provider, Site } from '../api/types'
 import Modal from '../components/Modal'
 
@@ -18,6 +18,8 @@ export default function Providers() {
   const [nameOverride, setNameOverride] = useState('')
   const [siteApiKey, setSiteApiKey] = useState('')
   const [siteOauthJson, setSiteOauthJson] = useState('')
+  const [discovering, setDiscovering] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
   const load = () => {
     setLoading(true)
@@ -39,6 +41,39 @@ export default function Providers() {
       setShowModal(false)
       load()
     } catch (e: any) { setError(e.message) }
+  }
+
+  const handleDiscoverAll = async () => {
+    setDiscovering(true)
+    setError('')
+    try {
+      const body = selectedIds.size > 0 ? { provider_ids: [...selectedIds] } : {}
+      const res = await discoverAllModels(body)
+      const ok = res.results.filter(r => !r.error).length
+      const fail = res.results.filter(r => r.error).length
+      alert(`发现完成: ${ok} 成功, ${fail} 失败`)
+      load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const toggleSelectAll = () => {
+    if (selectedIds.size === providers.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(providers.map(p => p.id)))
+    }
   }
 
   const handleCreateFromSite = async () => {
@@ -70,21 +105,27 @@ export default function Providers() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2>供应商管理</h2>
-        <button onClick={openCreate} style={{ padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>+ 添加供应商</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={handleDiscoverAll} disabled={discovering} style={{ padding: '6px 16px', background: '#52c41a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>{discovering ? '发现中...' : '批量发现'}</button>
+          <button onClick={openCreate} style={{ padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>+ 添加供应商</button>
+        </div>
       </div>
       {error && <div style={{ color: '#ff4d4f', marginBottom: 8 }}>{error}</div>}
       {loading ? <p>加载中...</p> : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #f0f0f0', textAlign: 'left' }}>
-              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
+              <th style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.size === providers.length && providers.length > 0} onChange={toggleSelectAll} /></th>
+              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>认证</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {providers.map(p => (
               <tr key={p.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)} /></td>
                 <td style={{ padding: 8 }}>{p.name}</td>
                 <td style={{ padding: 8 }}>{p.protocol}</td>
+                <td style={{ padding: 8 }}>{p.auth_mode}</td>
                 <td style={{ padding: 8 }}>{p.priority}</td>
                 <td style={{ padding: 8 }}>{p.enabled ? '✅' : '❌'}</td>
                 <td style={{ padding: 8, fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.supported_tools || '[]'}</td>

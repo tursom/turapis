@@ -37,8 +37,15 @@ func (e *UpstreamError) Error() string {
 	}
 	return "upstream error"
 }
-
 func (e *UpstreamError) Unwrap() error { return e.Err }
+
+func IsAuthError(err error) bool {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode == 401 || ue.StatusCode == 403
+	}
+	return false
+}
 
 // ErrUnsupportedFeature 不支持的高级特性
 var ErrUnsupportedFeature = errors.New("unsupported feature: multimodal/thinking not supported")

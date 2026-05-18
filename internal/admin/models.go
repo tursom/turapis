@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tursom/turapis/internal/config"
+	"github.com/tursom/turapis/internal/models"
 )
 
 func (a *Admin) createModelMapping(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +103,15 @@ func (a *Admin) discoverModels(w http.ResponseWriter, r *http.Request) {
 
 	modelInfos, err := prov.ListModels(ctx)
 	if err != nil {
+		if p.AuthMode == "oauth" && models.IsAuthError(err) {
+			existingModels, _ := a.store.GetProviderModels(id)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"provider": p.Name,
+				"models":   existingModels,
+				"count":    len(existingModels),
+			})
+			return
+		}
 		slog.Warn("model_discovery_failed", "provider", p.Name, "error", err)
 		writeError(w, http.StatusInternalServerError, "discover models: "+err.Error())
 		return
@@ -119,6 +129,79 @@ func (a *Admin) discoverModels(w http.ResponseWriter, r *http.Request) {
 		"provider": p.Name,
 		"models":   models,
 		"count":    len(models),
+	})
+}
+
+// discoverAllModels 批量发现模型的模型。请求体可选 {"provider_ids": [1,2,3]}，不传则所有启用 Provider。
+func (a *Admin) discoverAllModels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProviderIDs []int `json:"provider_ids"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	providers, err := a.store.ListEnabledProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 如果指定了 ID 列表，则过滤
+	if len(body.ProviderIDs) > 0 {
+		idSet := make(map[int]bool, len(body.ProviderIDs))
+		for _, id := range body.ProviderIDs {
+			idSet[id] = true
+		}
+		filtered := make([]config.Provider, 0, len(body.ProviderIDs))
+		for _, p := range providers {
+			if idSet[p.ID] {
+				filtered = append(filtered, p)
+			}
+		}
+		providers = filtered
+	}
+
+	type result struct {
+		Provider string `json:"provider"`
+		Count    int    `json:"count"`
+		Error    string `json:"error,omitempty"`
+	}
+	results := make([]result, 0, len(providers))
+
+	for _, p := range providers {
+		prov, ok := a.registry.Get(p.Name)
+		if !ok {
+			results = append(results, result{Provider: p.Name, Error: "not registered"})
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		modelInfos, err := prov.ListModels(ctx)
+		cancel()
+		if err != nil {
+			// OAuth provider 认证失败 → 回退到已有 provider_models
+			if p.AuthMode == "oauth" && models.IsAuthError(err) {
+				existingModels, _ := a.store.GetProviderModels(p.ID)
+				slog.Info("batch_discover_oauth_fallback", "provider", p.Name, "existing", len(existingModels))
+				results = append(results, result{Provider: p.Name, Count: len(existingModels)})
+				continue
+			}
+			slog.Warn("batch_discover_failed", "provider", p.Name, "error", err)
+			results = append(results, result{Provider: p.Name, Error: err.Error()})
+			continue
+		}
+
+		for _, m := range modelInfos {
+			if err := a.store.AddProviderModel(p.ID, m.ID, m.Name); err != nil {
+				slog.Warn("batch_add_model_failed", "provider", p.Name, "model", m.ID, "error", err)
+			}
+		}
+		slog.Info("batch_discover_done", "provider", p.Name, "found", len(modelInfos))
+		results = append(results, result{Provider: p.Name, Count: len(modelInfos)})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results,
+		"total":   len(results),
 	})
 }
 

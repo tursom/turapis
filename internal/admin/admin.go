@@ -50,6 +50,7 @@ func (a *Admin) Routes() http.Handler {
 		r.Delete("/model-mappings/{id}", a.deleteModelMapping)
 
 		// 模型发现
+		r.Post("/providers/batch-discover", a.discoverAllModels)
 		r.Post("/providers/{id}/discover", a.discoverModels)
 
 		// 全局设置

@@ -249,6 +249,34 @@ func TestCreateProviderFromSite_NameConflict(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromSite_ModelNameUsesModelID(t *testing.T) {
+	store := setupTestStore(t)
+
+	site := &Site{Name: "ModelID Test Site", BaseURL: "https://api.test.com", Protocol: "openai", AuthMode: "api_key", Enabled: true}
+	store.CreateSite(site)
+	store.AddSiteModel(site.ID, "gpt-4o-2024-05-13", "GPT-4o Latest")
+
+	_, _, err := store.CreateProviderFromSite(site.ID, "", "sk-test-key", nil)
+	if err != nil {
+		t.Fatalf("create provider from site: %v", err)
+	}
+
+	// The model_mapping must use the model_id ("gpt-4o-2024-05-13"), not the display name ("GPT-4o Latest")
+	chain, err := store.GetPriorityChain("gpt-4o-2024-05-13")
+	if err != nil {
+		t.Fatalf("get priority chain: %v", err)
+	}
+	if len(chain) == 0 {
+		t.Error("expected to find mapping by model_id 'gpt-4o-2024-05-13', but got none")
+	}
+
+	// Confirm the display name does NOT accidentally match
+	chain2, _ := store.GetPriorityChain("GPT-4o Latest")
+	if len(chain2) != 0 {
+		t.Error("did not expect mapping by display name 'GPT-4o Latest'")
+	}
+}
+
 func TestCreateProviderFromSite_TransactionRollback(t *testing.T) {
 	store := setupTestStore(t)
 
