@@ -920,6 +920,25 @@ func codexVersion(ctx context.Context) string {
 	return "0.130.0"
 }
 
+func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error) {
+	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", codexVersion(ctx))
+	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Connection", "Keep-Alive")
+	req.Header.Set("OpenAI-Beta", "responses-2025-03-11")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("raw responses stream: %w", err)
+	}
+	p.lastQuota = provider.ParseQuota(resp.Header)
+	return resp, nil
+}
+
 func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte) (<-chan models.UnifiedStreamEvent, error) {
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")

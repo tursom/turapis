@@ -50,6 +50,8 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 				_ = g.store.SetSetting("codex_cli_version", m[1])
 				r = r.WithContext(models.WithCodexVersion(r.Context(), m[1]))
 			}
+			r = r.WithContext(models.WithRawProxy(r.Context()))
+			slog.Info("jwt_raw_proxy_enabled", "remote", r.RemoteAddr)
 			next.ServeHTTP(w, r)
 			return
 		}

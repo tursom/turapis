@@ -14,12 +14,16 @@ import (
 
 // AccessLogCollector 线程安全的请求元数据收集器
 type AccessLogCollector struct {
-	mu           sync.Mutex
-	model        string
-	providerName string
-	tokensIn     int
-	tokensOut    int
-	errorMsg     string
+	mu              sync.Mutex
+	model           string
+	providerName    string
+	tokensIn        int
+	tokensOut       int
+	errorMsg        string
+	clientBody      string
+	clientResponse  string
+	upstreamReq     string
+	upstreamResp    string
 }
 
 func (c *AccessLogCollector) SetModel(m string) {

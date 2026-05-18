@@ -205,7 +205,9 @@ func initSchema(db *sqlx.DB) error {
 	    remote_ip     TEXT NOT NULL DEFAULT '',
 	    request_id    TEXT NOT NULL DEFAULT '',
 	    provider_name TEXT NOT NULL DEFAULT '',
-	    error_msg     TEXT NOT NULL DEFAULT ''
+	    error_msg     TEXT NOT NULL DEFAULT '',
+	    raw_body      TEXT NOT NULL DEFAULT '',
+	    raw_response  TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_access_logs_timestamp ON access_logs(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_id ON access_logs(api_key_id);
@@ -217,6 +219,10 @@ func initSchema(db *sqlx.DB) error {
 	db.Exec("ALTER TABLE providers ADD COLUMN supported_tools TEXT NOT NULL DEFAULT '[\"web_search\"]'")
 	db.Exec("ALTER TABLE providers ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE global_settings ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE access_logs ADD COLUMN client_req TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE access_logs ADD COLUMN client_resp TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE access_logs ADD COLUMN upstream_req TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE access_logs ADD COLUMN upstream_resp TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -1042,6 +1048,8 @@ type AccessLog struct {
 	RequestID    string `db:"request_id" json:"request_id"`
 	ProviderName string `db:"provider_name" json:"provider_name"`
 	ErrorMsg     string `db:"error_msg" json:"error_msg"`
+	RawBody      string `db:"raw_body" json:"raw_body"`
+	RawResponse  string `db:"raw_response" json:"raw_response"`
 }
 
 // AccessLogQuery 访问日志查询参数

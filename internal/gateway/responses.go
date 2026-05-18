@@ -21,6 +21,11 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if models.IsRawProxy(r.Context()) || strings.HasPrefix(r.URL.Path, "/v1/responses") {
+		g.handleRawResponsesProxy(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), bodyBytes)
+		return
+	}
+
 	var respReq translate.ResponsesReq
 	if err := json.Unmarshal(bodyBytes, &respReq); err != nil {
 		slog.Warn("invalid_responses_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)
@@ -413,4 +418,29 @@ func (g *Gateway) saveQuotaIfPresent(result *router.StreamRouteResult) {
 	if err := g.store.SaveProviderQuota(p.ID, qj); err != nil {
 		slog.Warn("save_stream_quota_failed", "provider", result.ProviderName, "error", err)
 	}
+}
+
+func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {
+	model := "gpt-5.4"
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(bodyBytes, &probe) == nil && probe.Model != "" {
+		model = probe.Model
+	}
+	body, providerName, err := g.router.RouteRawStream(r.Context(), model, bodyBytes)
+	if err != nil {
+		slog.Error("raw_proxy_failed", "error", err)
+		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
+		return
+	}
+	defer body.Close()
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(model)
+		c.SetProvider(providerName)
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	io.Copy(w, body)
 }

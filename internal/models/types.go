@@ -50,6 +50,7 @@ type ctxKey int
 const (
 	ctxKeyRawBody ctxKey = iota
 	ctxKeyCodexVersion
+	ctxKeyRawProxy
 )
 
 func WithRawBody(ctx context.Context, body []byte) context.Context {
@@ -72,6 +73,15 @@ func CodexVersionFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+func WithRawProxy(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyRawProxy, true)
+}
+
+func IsRawProxy(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyRawProxy).(bool)
+	return v
 }
 
 // UnifiedUsage 统一用量信息
