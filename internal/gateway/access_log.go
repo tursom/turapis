@@ -26,6 +26,30 @@ type AccessLogCollector struct {
 	upstreamResp    string
 }
 
+func (c *AccessLogCollector) SetClientBody(b string) {
+	c.mu.Lock()
+	c.clientBody = b
+	c.mu.Unlock()
+}
+
+func (c *AccessLogCollector) SetClientResponse(r string) {
+	c.mu.Lock()
+	c.clientResponse = r
+	c.mu.Unlock()
+}
+
+func (c *AccessLogCollector) SetUpstreamReq(r string) {
+	c.mu.Lock()
+	c.upstreamReq = r
+	c.mu.Unlock()
+}
+
+func (c *AccessLogCollector) SetUpstreamResp(r string) {
+	c.mu.Lock()
+	c.upstreamResp = r
+	c.mu.Unlock()
+}
+
 func (c *AccessLogCollector) SetModel(m string) {
 	c.mu.Lock()
 	c.model = m
@@ -128,11 +152,12 @@ func (w *accessLogWriter) Shutdown(timeout time.Duration) {
 	}
 }
 
-// responseRecorder 包装 http.ResponseWriter，捕获 status code
+// responseRecorder 包装 http.ResponseWriter，捕获 status code 和响应体
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode  int
 	wroteHeader bool
+	body        []byte
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
@@ -148,6 +173,7 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 		r.statusCode = http.StatusOK
 		r.wroteHeader = true
 	}
+	r.body = append(r.body, b...)
 	return r.ResponseWriter.Write(b)
 }
 
@@ -162,6 +188,10 @@ func (r *responseRecorder) StatusCode() int {
 		return http.StatusOK
 	}
 	return r.statusCode
+}
+
+func (r *responseRecorder) Body() string {
+	return string(r.body)
 }
 
 // accessLogMiddleware 记录所有 AI API 请求的访问日志（/v1/models 除外）
@@ -191,6 +221,18 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		}
 
 		inTokens, outTokens := collector.Tokens()
+		collector.mu.Lock()
+		clientBody := collector.clientBody
+		clientResp := collector.clientResponse
+		upstreamReq := collector.upstreamReq
+		upstreamResp := collector.upstreamResp
+		collector.mu.Unlock()
+
+		// 如果 handler 未显式设置 clientResponse，使用 recorder 捕获的响应体
+		if clientResp == "" && rec.StatusCode() < 300 {
+			clientResp = rec.Body()
+		}
+
 		log := config.AccessLog{
 			Timestamp:    start.UTC().Format(time.RFC3339),
 			ApiKeyID:     keyID,
@@ -206,6 +248,10 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 			RequestID:    chimw.GetReqID(r.Context()),
 			ProviderName: collector.ProviderName(),
 			ErrorMsg:     collector.ErrorMsg(),
+			ClientReq:    clientBody,
+			ClientResp:   clientResp,
+			UpstreamReq:  upstreamReq,
+			UpstreamResp: upstreamResp,
 		}
 
 		select {

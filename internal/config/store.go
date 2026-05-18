@@ -101,129 +101,12 @@ func NewStore(dbPath string) (*Store, error) {
 		}
 	}
 
-	if err := initSchema(db); err != nil {
+	if err := runMigrations(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
+		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
 	return &Store{DB: db}, nil
-}
-
-func initSchema(db *sqlx.DB) error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS providers (
-	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    name        TEXT NOT NULL,
-	    base_url    TEXT NOT NULL,
-	    api_key     TEXT NOT NULL,
-	protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
-	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
-	    priority    INTEGER NOT NULL DEFAULT 100,
-	    enabled     INTEGER NOT NULL DEFAULT 1,
-	    supported_tools TEXT NOT NULL DEFAULT '["web_search"]',
-	    proxy       TEXT NOT NULL DEFAULT '',
-	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-	    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS model_mappings (
-	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    model_name  TEXT NOT NULL,
-	    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-	    priority    INTEGER NOT NULL DEFAULT 100,
-	    enabled     INTEGER NOT NULL DEFAULT 1,
-	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-	    UNIQUE(model_name, provider_id)
-	);
-
-	CREATE TABLE IF NOT EXISTS global_settings (
-	    key   TEXT PRIMARY KEY,
-	    value TEXT NOT NULL,
-	    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS provider_models (
-	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-	    model_id    TEXT NOT NULL,
-	    model_name  TEXT NOT NULL,
-	    UNIQUE(provider_id, model_id)
-	);
-
-	CREATE TABLE IF NOT EXISTS api_keys (
-	    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-	    key             TEXT NOT NULL UNIQUE,
-	    name            TEXT NOT NULL DEFAULT '',
-	    enabled         INTEGER NOT NULL DEFAULT 1,
-	    permissions     TEXT NOT NULL DEFAULT '{}',
-	    expires_at      TEXT DEFAULT NULL,
-	    rate_limit      INTEGER DEFAULT NULL,
-	    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS sites (
-	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    name        TEXT NOT NULL UNIQUE,
-	    base_url    TEXT NOT NULL,
-	    protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
-	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
-	    enabled     INTEGER NOT NULL DEFAULT 1,
-	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-	    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS site_models (
-	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	    site_id     INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
-	    model_id    TEXT NOT NULL,
-	    model_name  TEXT NOT NULL,
-	    UNIQUE(site_id, model_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_site_models_site_id ON site_models(site_id);
-	CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id ON provider_models(provider_id);
-
-	CREATE TABLE IF NOT EXISTS sessions (
-	    token      TEXT PRIMARY KEY,
-	    expires_at TEXT NOT NULL,
-	    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-	CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-
-	CREATE TABLE IF NOT EXISTS access_logs (
-	    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	    timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
-	    api_key_id    INTEGER DEFAULT NULL,
-	    api_key_name  TEXT NOT NULL DEFAULT '',
-	    method        TEXT NOT NULL,
-	    path          TEXT NOT NULL,
-	    model         TEXT NOT NULL DEFAULT '',
-	    status_code   INTEGER NOT NULL DEFAULT 0,
-	    tokens_in     INTEGER NOT NULL DEFAULT 0,
-	    tokens_out    INTEGER NOT NULL DEFAULT 0,
-	    duration_ms   INTEGER NOT NULL DEFAULT 0,
-	    remote_ip     TEXT NOT NULL DEFAULT '',
-	    request_id    TEXT NOT NULL DEFAULT '',
-	    provider_name TEXT NOT NULL DEFAULT '',
-	    error_msg     TEXT NOT NULL DEFAULT '',
-	    raw_body      TEXT NOT NULL DEFAULT '',
-	    raw_response  TEXT NOT NULL DEFAULT ''
-	);
-	CREATE INDEX IF NOT EXISTS idx_access_logs_timestamp ON access_logs(timestamp);
-	CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_id ON access_logs(api_key_id);
-	`
-	_, err := db.Exec(schema)
-	if err != nil {
-		return err
-	}
-	db.Exec("ALTER TABLE providers ADD COLUMN supported_tools TEXT NOT NULL DEFAULT '[\"web_search\"]'")
-	db.Exec("ALTER TABLE providers ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE global_settings ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE access_logs ADD COLUMN client_req TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE access_logs ADD COLUMN client_resp TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE access_logs ADD COLUMN upstream_req TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE access_logs ADD COLUMN upstream_resp TEXT NOT NULL DEFAULT ''")
-	return nil
 }
 
 // Close 关闭数据库连接
@@ -1050,6 +933,10 @@ type AccessLog struct {
 	ErrorMsg     string `db:"error_msg" json:"error_msg"`
 	RawBody      string `db:"raw_body" json:"raw_body"`
 	RawResponse  string `db:"raw_response" json:"raw_response"`
+	ClientReq    string `db:"client_req" json:"client_req"`
+	ClientResp   string `db:"client_resp" json:"client_resp"`
+	UpstreamReq  string `db:"upstream_req" json:"upstream_req"`
+	UpstreamResp string `db:"upstream_resp" json:"upstream_resp"`
 }
 
 // AccessLogQuery 访问日志查询参数
@@ -1066,8 +953,8 @@ type AccessLogQuery struct {
 // InsertAccessLog 插入访问日志
 func (s *Store) InsertAccessLog(log *AccessLog) error {
 	_, err := s.DB.NamedExec(
-		`INSERT INTO access_logs (timestamp, api_key_id, api_key_name, method, path, model, status_code, tokens_in, tokens_out, duration_ms, remote_ip, request_id, provider_name, error_msg)
-		 VALUES (:timestamp, :api_key_id, :api_key_name, :method, :path, :model, :status_code, :tokens_in, :tokens_out, :duration_ms, :remote_ip, :request_id, :provider_name, :error_msg)`,
+		`INSERT INTO access_logs (timestamp, api_key_id, api_key_name, method, path, model, status_code, tokens_in, tokens_out, duration_ms, remote_ip, request_id, provider_name, error_msg, client_req, client_resp, upstream_req, upstream_resp)
+		 VALUES (:timestamp, :api_key_id, :api_key_name, :method, :path, :model, :status_code, :tokens_in, :tokens_out, :duration_ms, :remote_ip, :request_id, :provider_name, :error_msg, :client_req, :client_resp, :upstream_req, :upstream_resp)`,
 		log,
 	)
 	if err != nil {
@@ -1154,6 +1041,19 @@ func (s *Store) CleanupOldLogs(retentionDays int) (int64, error) {
 	}
 	n, _ := result.RowsAffected()
 	return n, nil
+}
+
+// GetAccessLog 获取单条访问日志（包含详细请求/返回体）
+func (s *Store) GetAccessLog(id int) (*AccessLog, error) {
+	var log AccessLog
+	err := s.DB.Get(&log, "SELECT * FROM access_logs WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("access log %d not found", id)
+		}
+		return nil, fmt.Errorf("get access log: %w", err)
+	}
+	return &log, nil
 }
 
 // StartCleanup 启动定时清理任务

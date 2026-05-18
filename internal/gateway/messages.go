@@ -21,6 +21,10 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetClientBody(string(bodyBytes))
+	}
+
 	var anthropicReq translate.AnthropicReq
 	if err := json.Unmarshal(bodyBytes, &anthropicReq); err != nil {
 		slog.Warn("invalid_anthropic_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)
@@ -55,6 +59,12 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 		c.SetModel(unified.Model)
 		c.SetProvider(result.UsedProvider)
 		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
+		if b, err := json.Marshal(unified); err == nil {
+			c.SetUpstreamReq(string(b))
+		}
+		if b, err := json.Marshal(result.Response); err == nil {
+			c.SetUpstreamResp(string(b))
+		}
 	}
 
 	// 转回 Anthropic 格式

@@ -70,6 +70,7 @@ func (a *Admin) Routes() http.Handler {
 
 		// 访问日志
 		r.Get("/access-logs", a.listAccessLogs)
+		r.Get("/access-logs/{id}", a.getAccessLog)
 
 		// 站点管理
 		r.Post("/sites", a.createSite)

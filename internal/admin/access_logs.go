@@ -4,8 +4,25 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/tursom/turapis/internal/config"
 )
+
+func (a *Admin) getAccessLog(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	log, err := a.store.GetAccessLog(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, log)
+}
 
 func (a *Admin) listAccessLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

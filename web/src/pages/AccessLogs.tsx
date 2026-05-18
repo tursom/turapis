@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchAccessLogs } from '../api/accessLogs'
+import { fetchAccessLogs, fetchAccessLogDetail } from '../api/accessLogs'
 import { fetchAPIKeys } from '../api/client'
 import type { AccessLog, APIKeyListItem } from '../api/types'
 
@@ -27,6 +27,19 @@ export default function AccessLogs() {
   const [filterTo, setFilterTo] = useState('')
 
   const [apiKeys, setApiKeys] = useState<APIKeyListItem[]>([])
+
+  // detail modal
+  const [selectedLogId, setSelectedLogId] = useState<number | null>(null)
+  const [detailData, setDetailData] = useState<AccessLog | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
+  const [hoveredRowId, setHoveredRowId] = useState<number | null>(null)
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    client_req: true,
+    client_resp: true,
+    upstream_req: true,
+    upstream_resp: true,
+  })
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
@@ -74,6 +87,36 @@ export default function AccessLogs() {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     })
+  }
+
+  const formatJson = (raw: string): string => {
+    if (!raw) return ''
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2)
+    } catch {
+      return raw
+    }
+  }
+
+  const handleRowClick = (id: number) => {
+    setSelectedLogId(id)
+    setDetailData(null)
+    setDetailError('')
+    setDetailLoading(true)
+    fetchAccessLogDetail(id)
+      .then(data => setDetailData(data))
+      .catch(e => setDetailError(e.message))
+      .finally(() => setDetailLoading(false))
+  }
+
+  const closeModal = () => {
+    setSelectedLogId(null)
+    setDetailData(null)
+    setDetailError('')
+  }
+
+  const toggleSection = (name: string) => {
+    setExpandedSections(prev => ({ ...prev, [name]: !prev[name] }))
   }
 
   return (
@@ -148,7 +191,17 @@ export default function AccessLogs() {
                   <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: '#999' }}>暂无日志记录</td></tr>
                 ) : (
                   logs.map(log => (
-                    <tr key={log.id} style={{ borderBottom: '1px solid #f0f0f0', verticalAlign: 'top' }}>
+                    <tr key={log.id}
+                      onClick={() => handleRowClick(log.id)}
+                      onMouseEnter={() => setHoveredRowId(log.id)}
+                      onMouseLeave={() => setHoveredRowId(null)}
+                      style={{
+                        borderBottom: '1px solid #f0f0f0',
+                        verticalAlign: 'top',
+                        cursor: 'pointer',
+                        background: hoveredRowId === log.id ? '#f5f5f5' : 'transparent',
+                        transition: 'background 0.15s',
+                      }}>
                       <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', fontSize: 12, color: '#666' }}>{formatTime(log.timestamp)}</td>
                       <td style={{ padding: '6px 8px', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.api_key_name || '-'}</td>
                       <td style={{ padding: '6px 8px', fontFamily: 'monospace', fontSize: 12 }}>{log.method}</td>
@@ -183,6 +236,104 @@ export default function AccessLogs() {
             <button onClick={() => goPage(totalPages)} disabled={page >= totalPages} style={{ padding: '4px 10px', border: '1px solid #d9d9d9', borderRadius: 4, background: '#fff', cursor: page >= totalPages ? 'not-allowed' : 'pointer', fontSize: 13, opacity: page >= totalPages ? 0.5 : 1 }}>末页</button>
           </div>
         </>
+      )}
+
+      {/* Detail Modal */}
+      {selectedLogId !== null && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal() }}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div style={{
+            background: '#fff', borderRadius: 8, maxWidth: '80vw', maxHeight: '80vh',
+            width: 900, display: 'flex', flexDirection: 'column',
+            boxShadow: '0 8px 40px rgba(0,0,0,0.12)',
+          }}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '16px 20px', borderBottom: '1px solid #f0f0f0', flexShrink: 0,
+            }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>请求详情 #{selectedLogId}</h3>
+              <button onClick={closeModal} style={{
+                border: 'none', background: 'none', fontSize: 20, cursor: 'pointer',
+                color: '#999', padding: '0 4px', lineHeight: 1,
+              }} onMouseEnter={(e) => { (e.target as HTMLButtonElement).style.color = '#333' }}
+                 onMouseLeave={(e) => { (e.target as HTMLButtonElement).style.color = '#999' }}
+              >&times;</button>
+            </div>
+
+            <div style={{ overflowY: 'auto', padding: '16px 20px', flex: 1 }}>
+              {detailLoading && <p style={{ textAlign: 'center', color: '#999', padding: 40 }}>加载中...</p>}
+              {detailError && <div style={{ color: '#ff4d4f', padding: 16, textAlign: 'center' }}>{detailError}</div>}
+              {detailData && (
+                <>
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                    gap: '8px 16px', marginBottom: 20,
+                  }}>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>时间</span><div style={{ fontSize: 13 }}>{formatTime(detailData.timestamp)}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>方法</span><div style={{ fontFamily: 'monospace', fontSize: 13 }}>{detailData.method}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>路径</span><div style={{ fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-all' }}>{detailData.path}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>状态码</span><div style={{ fontSize: 13 }}>{detailData.status_code}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>模型</span><div style={{ fontSize: 13 }}>{detailData.model || '-'}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>供应商</span><div style={{ fontSize: 13 }}>{detailData.provider_name || '-'}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>Token (入/出)</span><div style={{ fontSize: 13 }}>{detailData.tokens_in} / {detailData.tokens_out}</div></div>
+                    <div><span style={{ color: '#999', fontSize: 12 }}>耗时</span><div style={{ fontSize: 13 }}>{detailData.duration_ms} ms</div></div>
+                  </div>
+
+                  {(['client_req', 'client_resp', 'upstream_req', 'upstream_resp'] as const).map(section => {
+                    const raw: string = detailData[section]
+                    const isExpanded = expandedSections[section]
+                    const formatted = formatJson(raw)
+                    return (
+                      <div key={section} style={{ marginBottom: 12 }}>
+                        <div
+                          onClick={() => toggleSection(section)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 6,
+                            padding: '8px 12px', background: '#fafafa',
+                            border: '1px solid #f0f0f0', borderRadius: isExpanded ? '4px 4px 0 0' : 4,
+                            cursor: 'pointer', fontSize: 13, fontWeight: 500,
+                            userSelect: 'none',
+                          }}
+                        >
+                          <span style={{
+                            fontSize: 10, transition: 'transform 0.2s',
+                            display: 'inline-block',
+                            transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                          }}>&#9654;</span>
+                          {section}
+                          {!raw && <span style={{ color: '#ccc', fontWeight: 400, marginLeft: 8, fontSize: 12 }}>无数据</span>}
+                        </div>
+                        {isExpanded && (
+                          raw ? (
+                            <pre style={{
+                              margin: 0, padding: '12px 16px', background: '#1e1e1e', color: '#d4d4d4',
+                              borderRadius: '0 0 4px 4px', fontSize: 12, lineHeight: 1.6,
+                              overflowX: 'auto', maxHeight: 400, overflowY: 'auto',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              border: '1px solid #333', borderTop: 'none',
+                            }}>{formatted}</pre>
+                          ) : (
+                            <div style={{
+                              padding: '12px 16px', color: '#999', fontSize: 13,
+                              border: '1px solid #f0f0f0', borderTop: 'none',
+                              borderRadius: '0 0 4px 4px',
+                            }}>无数据</div>
+                          )
+                        )}
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

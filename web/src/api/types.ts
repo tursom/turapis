@@ -104,6 +104,10 @@ export interface AccessLog {
   request_id: string
   provider_name: string
   error_msg: string
+  client_req: string
+  client_resp: string
+  upstream_req: string
+  upstream_resp: string
 }
 
 export interface AccessLogResponse {

@@ -1,4 +1,4 @@
-import type { AccessLogResponse } from './types'
+import type { AccessLog, AccessLogResponse } from './types'
 
 export async function fetchAccessLogs(params: {
   key_id?: number; model?: string; status?: number;
@@ -14,6 +14,19 @@ export async function fetchAccessLogs(params: {
   if (params.per_page !== undefined) searchParams.set('per_page', String(params.per_page))
   const qs = searchParams.toString()
   const res = await fetch(`/admin/access-logs${qs ? '?' + qs : ''}`, { credentials: 'include' })
+  if (res.status === 401 && window.location.pathname !== '/login') {
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchAccessLogDetail(id: number): Promise<AccessLog> {
+  const res = await fetch(`/admin/access-logs/${id}`, { credentials: 'include' })
   if (res.status === 401 && window.location.pathname !== '/login') {
     window.location.href = '/login'
     throw new Error('Unauthorized')
