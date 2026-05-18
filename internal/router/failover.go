@@ -44,13 +44,10 @@ type RouteResult struct {
 }
 
 // buildPriorityChain 构建优先级链
-// 1. 先查找 model_mappings 中该模型的专属映射
-// 2. 若找不到，使用全局默认链
 func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, error) {
 	seen := map[string]bool{}
 	var providers []provider.Provider
 
-	// 1. 先查找 model_mappings 中该模型的专属映射
 	entries, err := r.store.GetPriorityChain(modelName)
 	if err == nil {
 		for _, e := range entries {
@@ -62,14 +59,15 @@ func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, erro
 		}
 	}
 
-	// 2. 追加全局默认链（去重，排在专属映射之后）
-	defaultEntries, err := r.store.GetDefaultPriorityChain()
-	if err == nil {
-		for _, e := range defaultEntries {
-			p, ok := r.registry.Get(e.Provider.Name)
-			if ok && !seen[p.Name()] {
-				providers = append(providers, p)
-				seen[p.Name()] = true
+	if len(providers) == 0 {
+		defaultEntries, err := r.store.GetDefaultPriorityChain()
+		if err == nil {
+			for _, e := range defaultEntries {
+				p, ok := r.registry.Get(e.Provider.Name)
+				if ok && !seen[p.Name()] {
+					providers = append(providers, p)
+					seen[p.Name()] = true
+				}
 			}
 		}
 	}
@@ -77,14 +75,6 @@ func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, erro
 	return providers, nil
 }
 
-// execWithTimeout 带超时执行 Provider 调用
-func execWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return fn(ctx)
-}
-
-// routeNonStream 非流式路由（全链重试）
 func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest) (*RouteResult, error) {
 	chain, err := r.buildPriorityChain(req.Model)
 	if err != nil {
@@ -145,6 +135,10 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	return nil, ferr
 }
 
+type quotaProvider interface {
+	LastQuota() map[string]interface{}
+}
+
 // routeStream 流式路由（连接建立前重试，数据发送后不再重试）
 func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*StreamRouteResult, error) {
 	chain, err := r.buildPriorityChain(req.Model)
@@ -169,7 +163,11 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 					"attempt", i+1,
 				)
 			}
-			return &StreamRouteResult{Events: events, ProviderName: p.Name()}, nil
+			result := &StreamRouteResult{Events: events, ProviderName: p.Name()}
+			if qp, ok := p.(quotaProvider); ok {
+				result.Quota = qp.LastQuota()
+			}
+			return result, nil
 		}
 
 		cat := models.ClassifyError(err)

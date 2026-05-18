@@ -4,31 +4,72 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
+	"golang.org/x/net/proxy"
 )
 
-// sharedTransport 全局共享 HTTP Transport，所有 Provider 复用
-var sharedTransport = &http.Transport{
-	MaxIdleConns:        100,
-	MaxIdleConnsPerHost: 10,
-	IdleConnTimeout:     90 * time.Second,
-	ForceAttemptHTTP2:   false,
-	TLSHandshakeTimeout:  10 * time.Second,
-	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-		return d.DialContext(ctx, "tcp4", addr)
-	},
+var sharedTransport = buildTransport(nil)
+
+func SharedTransport() *http.Transport { return sharedTransport }
+
+func NewTransportWithProxy(proxyURL string) *http.Transport {
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.Host == "" {
+		return SharedTransport()
+	}
+	return buildTransport(u)
 }
 
-// SharedTransport 返回全局共享的 HTTP Transport（供各 Provider 使用）
-func SharedTransport() *http.Transport {
-	return sharedTransport
+func buildTransport(proxyURL *url.URL) *http.Transport {
+	if proxyURL == nil {
+		for _, env := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+			v := os.Getenv(env)
+			if v == "" {
+				continue
+			}
+			u, err := url.Parse(v)
+			if err == nil && u.Host != "" {
+				proxyURL = u
+				break
+			}
+		}
+	}
+
+	t := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   false,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+			return d.DialContext(ctx, "tcp4", addr)
+		},
+	}
+
+	if proxyURL == nil {
+		return t
+	}
+
+	switch proxyURL.Scheme {
+	case "socks5":
+		dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, nil, proxy.Direct)
+		if err == nil {
+			t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			}
+		}
+	default:
+		t.Proxy = http.ProxyURL(proxyURL)
+	}
+	return t
 }
 
-// Provider 是所有上游 AI API 提供者的统一接口
 type Provider interface {
 	Name() string
 	ChatCompletion(ctx context.Context, req *models.UnifiedRequest) (*models.UnifiedResponse, error)
@@ -38,27 +79,21 @@ type Provider interface {
 	SupportsTool(name string) bool
 }
 
-// Registry 管理所有已注册的 Provider 实例，并发安全
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]Provider
 }
 
-// NewRegistry 创建新的 Registry
 func NewRegistry() *Registry {
-	return &Registry{
-		providers: make(map[string]Provider),
-	}
+	return &Registry{providers: make(map[string]Provider)}
 }
 
-// Register 注册 Provider（并发安全）
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers[p.Name()] = p
 }
 
-// Get 按名称获取 Provider（并发安全）
 func (r *Registry) Get(name string) (Provider, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -66,7 +101,6 @@ func (r *Registry) Get(name string) (Provider, bool) {
 	return p, ok
 }
 
-// List 列出所有已注册 Provider（并发安全）
 func (r *Registry) List() []Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -77,7 +111,6 @@ func (r *Registry) List() []Provider {
 	return result
 }
 
-// Delete 按名称删除 Provider（并发安全）
 func (r *Registry) Delete(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -6,6 +6,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/jmoiron/sqlx v1.4.0
 	golang.org/x/crypto v0.51.0
+	golang.org/x/net v0.54.0
 	modernc.org/sqlite v1.50.1
 )
 

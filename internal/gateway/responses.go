@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
+	"github.com/tursom/turapis/internal/router"
 	"github.com/tursom/turapis/internal/translate"
 )
 
@@ -33,13 +34,15 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"unsupported_feature"}}`, http.StatusBadRequest)
 		return
 	}
+	unified.OriginalPath = r.URL.Path
 
 	if unified.Stream {
-		g.handleStreamResponses(w, r, unified)
+		g.handleStreamResponses(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), unified)
 		return
 	}
 
-	result, err := g.router.Route(r.Context(), unified)
+	ctx := models.WithRawBody(r.Context(), bodyBytes)
+	result, err := g.router.Route(ctx, unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/responses", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {
@@ -89,6 +92,8 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)
 	}
+
+	g.saveQuotaIfPresent(streamResult)
 
 	state := &streamState{
 		model:     unified.Model,
@@ -379,7 +384,22 @@ func splitNamespaceName(fullName string) (name, ns string) {
 	if idx == 0 {
 		return fullName[2:], ""
 	}
-	ns = fullName[:idx+2]
-	name = fullName[idx+2:]
-	return
+	return fullName[:idx], fullName[idx+2:]
+}
+
+func (g *Gateway) saveQuotaIfPresent(result *router.StreamRouteResult) {
+	if result == nil || len(result.Quota) == 0 {
+		return
+	}
+	p, err := g.store.GetProviderByName(result.ProviderName)
+	if err != nil || p == nil {
+		return
+	}
+	qj, err := json.Marshal(result.Quota)
+	if err != nil {
+		return
+	}
+	if err := g.store.SaveProviderQuota(p.ID, qj); err != nil {
+		slog.Warn("save_stream_quota_failed", "provider", result.ProviderName, "error", err)
+	}
 }

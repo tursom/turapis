@@ -46,6 +46,9 @@ func (a *Admin) listProviders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range providers {
+		providers[i].Quota = config.ParseProviderQuota(providers[i].APIKey)
+	}
 	writeJSON(w, http.StatusOK, providers)
 }
 
@@ -134,13 +137,13 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 	var prov provider.Provider
 	switch p.Protocol {
 	case "openai":
-		op := openai.New(p.Name, p.BaseURL, apiKey, supportedTools)
+		op := openai.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 			op.SetSearXNG(searxngURL)
 		}
 		prov = op
 	case "anthropic":
-		prov = anthropic.New(p.Name, p.BaseURL, apiKey, supportedTools)
+		prov = anthropic.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 	default:
 		return
 	}

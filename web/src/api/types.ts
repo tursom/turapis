@@ -8,8 +8,22 @@ export interface Provider {
   enabled: boolean
   auth_mode: string
   supported_tools: string
+  proxy: string
+  quota?: QuotaInfo
   created_at: string
   updated_at: string
+}
+
+export interface QuotaInfo {
+  primary?: QuotaEntry
+  secondary?: QuotaEntry
+  tertiary?: QuotaEntry
+}
+
+export interface QuotaEntry {
+  used_percent: number
+  reset_after_seconds: number
+  window_minutes: number
 }
 
 export interface Site {

@@ -1,6 +1,9 @@
 package models
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // ContentBlock 消息内容块，支持 text、tool_use、tool_result 三种类型
 type ContentBlock struct {
@@ -37,6 +40,38 @@ type UnifiedRequest struct {
 	ToolChoice  json.RawMessage  `json:"tool_choice,omitempty"`
 	// WebSearchOptions 从 Responses API web_search 工具提取的搜索参数
 	WebSearchOptions json.RawMessage `json:"web_search_options,omitempty"`
+	// OriginalPath 原始请求路径，用于 provider 选择正确的上游端点
+	// 例如 "/v1/responses" → 上游使用 /responses
+	OriginalPath string `json:"-"`
+}
+
+type ctxKey int
+
+const (
+	ctxKeyRawBody ctxKey = iota
+	ctxKeyCodexVersion
+)
+
+func WithRawBody(ctx context.Context, body []byte) context.Context {
+	return context.WithValue(ctx, ctxKeyRawBody, body)
+}
+
+func RawBodyFromContext(ctx context.Context) []byte {
+	if b, ok := ctx.Value(ctxKeyRawBody).([]byte); ok {
+		return b
+	}
+	return nil
+}
+
+func WithCodexVersion(ctx context.Context, v string) context.Context {
+	return context.WithValue(ctx, ctxKeyCodexVersion, v)
+}
+
+func CodexVersionFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyCodexVersion).(string); ok {
+		return v
+	}
+	return ""
 }
 
 // UnifiedUsage 统一用量信息

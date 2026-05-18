@@ -31,6 +31,7 @@ func (r *Router) Route(ctx context.Context, req *models.UnifiedRequest) (*RouteR
 type StreamRouteResult struct {
 	Events       <-chan models.UnifiedStreamEvent
 	ProviderName string
+	Quota        map[string]interface{}
 }
 
 // RouteStream 执行流式故障转移路由

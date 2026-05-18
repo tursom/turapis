@@ -25,17 +25,21 @@ type AnthropicProvider struct {
 	supportedTools map[string]bool
 }
 
-func New(name, baseURL, apiKey string, supportedTools []string) *AnthropicProvider {
+func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string) *AnthropicProvider {
 	st := make(map[string]bool, len(supportedTools))
 	for _, t := range supportedTools {
 		st[t] = true
+	}
+	transport := provider.SharedTransport()
+	if proxyURL != "" {
+		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	return &AnthropicProvider{
 		name:           name,
 		url:            strings.TrimSuffix(baseURL, "/"),
 		apiKey:         apiKey,
 		client: &http.Client{
-			Transport: provider.SharedTransport(),
+			Transport: transport,
 			Timeout:   60 * time.Second,
 		},
 		supportedTools: st,

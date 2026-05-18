@@ -1,4 +1,4 @@
-import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult } from './types'
+import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult, QuotaInfo } from './types'
 
 const API_BASE = ''
 
@@ -153,6 +153,17 @@ export function addSiteModel(siteId: number, data: { model_id: string; model_nam
 
 export function deleteSiteModel(siteId: number, modelId: number) {
   return request<{ status: string }>(`/admin/sites/${siteId}/models/${modelId}`, { method: 'DELETE' })
+}
+
+export function probeProviderQuota(providerId: number) {
+  return request<{ provider: string; status: string; quota: { primary?: { used_percent: number; reset_after_seconds: number; window_minutes: number }; secondary?: { used_percent: number; reset_after_seconds: number; window_minutes: number } } }>(`/admin/providers/${providerId}/quota`, { method: 'POST' })
+}
+
+export function batchProbeQuota(body?: { provider_ids?: number[] }) {
+  return request<{ results: Array<{ provider: string; status: string; quota?: QuotaInfo; error?: string }>; total: number }>('/admin/providers/batch-quota', {
+    method: 'POST',
+    body: body ? JSON.stringify(body) : undefined,
+  })
 }
 
 export function createProviderFromSite(siteId: number, data: { name_override?: string; api_key?: string; oauth?: object }) {

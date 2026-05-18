@@ -1,9 +1,36 @@
 import { useState, useEffect } from 'react'
-import { fetchProviders, createProvider, updateProvider, deleteProvider, fetchSites, createProviderFromSite, discoverAllModels } from '../api/client'
-import type { Provider, Site } from '../api/types'
+import { fetchProviders, createProvider, updateProvider, deleteProvider, fetchSites, createProviderFromSite, discoverAllModels, batchProbeQuota } from '../api/client'
+import type { Provider, Site, QuotaInfo, QuotaEntry } from '../api/types'
 import Modal from '../components/Modal'
 
-const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]' }
+function windowLabel(m: number) {
+  if (m <= 400) return '5h'
+  if (m <= 15000) return '7d'
+  return '30d'
+}
+
+function QuotaBar({ entry }: { entry: QuotaEntry }) {
+  const pct = entry.used_percent
+  const color = pct >= 80 ? '#ff4d4f' : pct >= 50 ? '#fa8c16' : '#52c41a'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
+      <span style={{ fontSize: 11, width: 24, textAlign: 'right' }}>{windowLabel(entry.window_minutes)}</span>
+      <span style={{ width: 48, height: 10, background: '#f0f0f0', borderRadius: 3, overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle' }}>
+        <span style={{ display: 'block', width: `${Math.min(pct, 100)}%`, height: '100%', background: color, borderRadius: 3, transition: 'width .3s' }} />
+      </span>
+      <span style={{ fontSize: 11, color, fontWeight: 600, minWidth: 32 }}>{String(pct)}%</span>
+    </span>
+  )
+}
+
+function formatQuota(q: QuotaInfo | undefined) {
+  if (!q) return '-'
+  const entries = [q.primary, q.secondary, q.tertiary].filter((e): e is QuotaEntry => e != null)
+  if (entries.length === 0) return '-'
+  return <span style={{ display: 'inline-flex', flexWrap: 'nowrap' }}>{entries.map((e, i) => <QuotaBar key={i} entry={e} />)}</span>
+}
+
+  const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string; proxy: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]', proxy: '' }
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -29,7 +56,7 @@ export default function Providers() {
   useEffect(() => { load() }, [])
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setCreateMode('manual'); setShowModal(true); fetchSites().then(setSitesList).catch(() => {}) }
-  const openEdit = (p: Provider) => { setEditing(p); setForm({ name: p.name, base_url: p.base_url, api_key: p.api_key, protocol: p.protocol, auth_mode: p.auth_mode, priority: p.priority, enabled: p.enabled, supported_tools: p.supported_tools || '[]' }); setShowModal(true) }
+  const openEdit = (p: Provider) => { setEditing(p); setForm({ name: p.name, base_url: p.base_url, api_key: p.api_key, protocol: p.protocol, auth_mode: p.auth_mode, priority: p.priority, enabled: p.enabled, supported_tools: p.supported_tools || '[]', proxy: p.proxy || '' }); setShowModal(true) }
 
   const handleSave = async () => {
     try {
@@ -76,6 +103,23 @@ export default function Providers() {
     }
   }
 
+  const handleBatchQuota = async () => {
+    setDiscovering(true)
+    setError('')
+    try {
+      const body = selectedIds.size > 0 ? { provider_ids: [...selectedIds] } : {}
+      const res = await batchProbeQuota(body)
+      const ok = res.results.filter(r => !r.error).length
+      const fail = res.results.filter(r => r.error).length
+      alert(`额度刷新完成: ${ok} 成功, ${fail} 失败`)
+      load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
   const handleCreateFromSite = async () => {
     if (!selectedSiteId) return
     try {
@@ -106,7 +150,8 @@ export default function Providers() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2>供应商管理</h2>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleDiscoverAll} disabled={discovering} style={{ padding: '6px 16px', background: '#52c41a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>{discovering ? '发现中...' : '批量发现'}</button>
+          <button onClick={handleDiscoverAll} disabled={discovering} style={{ padding: '6px 16px', background: '#52c41a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>{discovering ? '处理中...' : '批量发现'}</button>
+          <button onClick={handleBatchQuota} disabled={discovering} style={{ padding: '6px 16px', background: '#fa8c16', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>{discovering ? '处理中...' : '批量刷新额度'}</button>
           <button onClick={openCreate} style={{ padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>+ 添加供应商</button>
         </div>
       </div>
@@ -116,7 +161,7 @@ export default function Providers() {
           <thead>
             <tr style={{ borderBottom: '1px solid #f0f0f0', textAlign: 'left' }}>
               <th style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.size === providers.length && providers.length > 0} onChange={toggleSelectAll} /></th>
-              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>认证</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
+              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>认证</th><th style={{ padding: 8 }}>额度</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -125,8 +170,9 @@ export default function Providers() {
                 <td style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)} /></td>
                 <td style={{ padding: 8 }}>{p.name}</td>
                 <td style={{ padding: 8 }}>{p.protocol}</td>
-                <td style={{ padding: 8 }}>{p.auth_mode}</td>
-                <td style={{ padding: 8 }}>{p.priority}</td>
+              <td style={{ padding: 8 }}>{p.auth_mode}</td>
+              <td style={{ padding: 8, fontSize: 12, whiteSpace: 'nowrap' }}>{formatQuota(p.quota)}</td>
+              <td style={{ padding: 8 }}>{p.priority}</td>
                 <td style={{ padding: 8 }}>{p.enabled ? '✅' : '❌'}</td>
                 <td style={{ padding: 8, fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.supported_tools || '[]'}</td>
                 <td style={{ padding: 8 }}>
@@ -155,6 +201,7 @@ export default function Providers() {
             <label>优先级 <input type="number" value={form.priority} onChange={e => setForm({...form, priority: +e.target.value})} /></label>
             <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({...form, enabled: e.target.checked})} /> 启用</label>
             <label>支持的工具 <input value={form.supported_tools} onChange={e => setForm({...form, supported_tools: e.target.value})} placeholder='JSON array, e.g. ["web_search","code_interpreter"]' style={{ width: '100%' }} /></label>
+            <label>代理 <input value={form.proxy} onChange={e => setForm({...form, proxy: e.target.value})} placeholder="http://host:port 或 socks5://host:port" style={{ width: '100%' }} /></label>
             <button onClick={handleSave} style={{ padding: '8px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>保存</button>
           </div>
         ) : (

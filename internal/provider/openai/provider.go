@@ -26,19 +26,24 @@ type OpenAIProvider struct {
 	supportedTools map[string]bool
 	searxngURL     string
 	nsMap          map[string]string
+	lastQuota      map[string]interface{}
 }
 
-func New(name, baseURL, apiKey string, supportedTools []string) *OpenAIProvider {
+func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
 	st := make(map[string]bool, len(supportedTools))
 	for _, t := range supportedTools {
 		st[t] = true
+	}
+	transport := provider.SharedTransport()
+	if proxyURL != "" {
+		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	return &OpenAIProvider{
 		name:           name,
 		url:            strings.TrimSuffix(baseURL, "/"),
 		apiKey:         apiKey,
 		client: &http.Client{
-			Transport: provider.SharedTransport(),
+			Transport: transport,
 			Timeout:   60 * time.Second,
 		},
 		supportedTools: st,
@@ -208,6 +213,11 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req *models.Unified
 
 // ChatCompletionStream 发送流式请求
 func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
+	if p.isJWT() && strings.HasPrefix(req.OriginalPath, "/v1/responses") {
+		if raw := models.RawBodyFromContext(ctx); len(raw) > 0 {
+			return p.responsesStreamRaw(ctx, raw)
+		}
+	}
 	p.injectSearchIfNeeded(ctx, req)
 	p.buildNamespaceMap(req.Tools)
 	body := chatCompletionRequest{
@@ -333,9 +343,16 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.U
 	return ch, nil
 }
 
-// ListModels 列出可用模型
+// ListModels 列出可用模型。OAuth token 使用 Codex 专用端点。
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]models.ModelInfo, error) {
-	resp, err := p.doGet(ctx, "/models")
+	path := "/models"
+	extraHeaders := map[string]string{}
+	if len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" {
+		path = "/models?client_version=1.0.0"
+		extraHeaders["Originator"] = "codex_cli_rs"
+		extraHeaders["Accept"] = "application/json"
+	}
+	resp, err := p.doGetWithHeaders(ctx, path, extraHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +379,18 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]models.ModelInfo, er
 	return infos, nil
 }
 
+func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", p.url+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return p.client.Do(req)
+}
+
 func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interface{}) (*http.Response, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -375,11 +404,18 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" {
+		v := codexVersion(ctx)
+		req.Header.Set("Originator", "codex_cli_rs")
+		req.Header.Set("Version", v)
+		req.Header.Set("User-Agent", "codex_cli_rs/"+v)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post %s: ctx_err=%v err=%w", fullURL, ctx.Err(), err)
 	}
+	p.lastQuota = provider.ParseQuota(resp.Header)
 	return resp, nil
 }
 
@@ -871,4 +907,121 @@ func toUnifiedResponse(oaiResp *chatCompletionResponse) *models.UnifiedResponse 
 		}
 	}
 	return resp
+}
+
+func (p *OpenAIProvider) isJWT() bool { return len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" }
+
+func (p *OpenAIProvider) LastQuota() map[string]interface{} { return p.lastQuota }
+
+func codexVersion(ctx context.Context) string {
+	if v := models.CodexVersionFromContext(ctx); v != "" {
+		return v
+	}
+	return "0.130.0"
+}
+
+func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte) (<-chan models.UnifiedStreamEvent, error) {
+	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", codexVersion(ctx))
+	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Connection", "Keep-Alive")
+	req.Header.Set("OpenAI-Beta", "responses-2025-03-11")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("responses stream: %w", err)
+	}
+	p.lastQuota = provider.ParseQuota(resp.Header)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		resp.Body.Close()
+		return nil, &models.UpstreamError{StatusCode: resp.StatusCode, Body: body}
+	}
+
+	ch := make(chan models.UnifiedStreamEvent, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 1<<20), 1<<20)
+		var currentEvent string
+		var currentData strings.Builder
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			line := scanner.Text()
+			if strings.HasPrefix(line, "event: ") {
+				currentEvent = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				currentData.WriteString(strings.TrimPrefix(line, "data: "))
+			} else if line == "" && currentEvent != "" {
+				raw := strings.TrimSpace(currentData.String())
+				currentData.Reset()
+				switch {
+				case currentEvent == "response.output_text.delta":
+					var d struct {
+						Delta      string `json:"delta"`
+						Annotation string `json:"annotation"`
+					}
+					if json.Unmarshal([]byte(raw), &d) == nil {
+						text := d.Delta
+						if d.Annotation != "" {
+							text = d.Annotation
+						}
+						if text != "" {
+							ch <- models.UnifiedStreamEvent{Type: models.StreamEventDelta, Content: text}
+						}
+					}
+				case strings.HasPrefix(currentEvent, "response.tool_call"):
+					var tc struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+						CallID    string `json:"call_id"`
+					}
+					if json.Unmarshal([]byte(raw), &tc) == nil {
+						ch <- models.UnifiedStreamEvent{
+							Type: models.StreamEventDelta,
+							ToolCalls: []models.ToolCallDelta{{
+								ID:   tc.CallID,
+								Type: "function",
+								Function: &models.ToolCallFunctionDelta{
+									Name:      tc.Name,
+									Arguments: tc.Arguments,
+								},
+							}},
+						}
+					}
+				case currentEvent == "response.completed":
+					var rc struct {
+						Response struct {
+							Usage *struct {
+								InputTokens  int `json:"input_tokens"`
+								OutputTokens int `json:"output_tokens"`
+							} `json:"usage,omitempty"`
+						} `json:"response"`
+					}
+					if json.Unmarshal([]byte(raw), &rc) == nil && rc.Response.Usage != nil {
+						ch <- models.UnifiedStreamEvent{
+							Type: models.StreamEventUsage,
+							Usage: &models.UnifiedUsage{
+								InputTokens:  rc.Response.Usage.InputTokens,
+								OutputTokens: rc.Response.Usage.OutputTokens,
+							},
+						}
+					}
+				}
+				currentEvent = ""
+			}
+		}
+		ch <- models.UnifiedStreamEvent{Type: models.StreamEventStop}
+	}()
+	return ch, nil
 }

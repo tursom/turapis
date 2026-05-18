@@ -32,14 +32,15 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"unsupported_feature"}}`, http.StatusBadRequest)
 		return
 	}
+	unified.OriginalPath = r.URL.Path
 
 	if unified.Stream {
-		g.handleStreamCompletions(w, r, unified)
+		g.handleStreamCompletions(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), unified)
 		return
 	}
 
-	// 非流式路由
-	result, err := g.router.Route(r.Context(), unified)
+	ctx := models.WithRawBody(r.Context(), bodyBytes)
+	result, err := g.router.Route(ctx, unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/chat/completions", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {
@@ -74,6 +75,7 @@ func (g *Gateway) handleStreamCompletions(w http.ResponseWriter, r *http.Request
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)
 	}
+	g.saveQuotaIfPresent(streamResult)
 	filtered := make(chan models.UnifiedStreamEvent, 8)
 	go func() {
 		defer close(filtered)

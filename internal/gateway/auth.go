@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/tursom/turapis/internal/config"
+	"github.com/tursom/turapis/internal/models"
 )
 
 type ctxKey int
@@ -16,6 +18,8 @@ const (
 	ctxKeyApiKey ctxKey = iota
 	ctxKeyCollector
 )
+
+var reCodexVersion = regexp.MustCompile(`codex_cli_rs/(\d+\.\d+\.\d+)`)
 
 func withApiKey(ctx context.Context, k *config.APIKey) context.Context {
 	return context.WithValue(ctx, ctxKeyApiKey, k)
@@ -41,6 +45,11 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 
 		if strings.HasPrefix(key, "eyJ") {
 			w.Header().Set("X-Api-Key-Auth", "jwt-passthrough")
+			ua := r.Header.Get("User-Agent")
+			if m := reCodexVersion.FindStringSubmatch(ua); len(m) > 1 {
+				_ = g.store.SetSetting("codex_cli_version", m[1])
+				r = r.WithContext(models.WithCodexVersion(r.Context(), m[1]))
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

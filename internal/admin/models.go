@@ -12,6 +12,7 @@ import (
 
 	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/models"
+	"github.com/tursom/turapis/internal/provider"
 )
 
 func (a *Admin) createModelMapping(w http.ResponseWriter, r *http.Request) {
@@ -103,19 +104,17 @@ func (a *Admin) discoverModels(w http.ResponseWriter, r *http.Request) {
 
 	modelInfos, err := prov.ListModels(ctx)
 	if err != nil {
-		if p.AuthMode == "oauth" && models.IsAuthError(err) {
-			existingModels, _ := a.store.GetProviderModels(id)
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"provider": p.Name,
-				"models":   existingModels,
-				"count":    len(existingModels),
-			})
+			if p.AuthMode == "oauth" && models.IsAuthError(err) {
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"provider": p.Name,
+					"count":    countOauthDiscoveredModels(a.store, *p),
+				})
+				return
+			}
+			slog.Warn("model_discovery_failed", "provider", p.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "discover models: "+err.Error())
 			return
 		}
-		slog.Warn("model_discovery_failed", "provider", p.Name, "error", err)
-		writeError(w, http.StatusInternalServerError, "discover models: "+err.Error())
-		return
-	}
 
 	for _, m := range modelInfos {
 		if err := a.store.AddProviderModel(id, m.ID, m.Name); err != nil {
@@ -178,11 +177,8 @@ func (a *Admin) discoverAllModels(w http.ResponseWriter, r *http.Request) {
 		modelInfos, err := prov.ListModels(ctx)
 		cancel()
 		if err != nil {
-			// OAuth provider 认证失败 → 回退到已有 provider_models
 			if p.AuthMode == "oauth" && models.IsAuthError(err) {
-				existingModels, _ := a.store.GetProviderModels(p.ID)
-				slog.Info("batch_discover_oauth_fallback", "provider", p.Name, "existing", len(existingModels))
-				results = append(results, result{Provider: p.Name, Count: len(existingModels)})
+				results = append(results, result{Provider: p.Name, Count: countOauthDiscoveredModels(a.store, p)})
 				continue
 			}
 			slog.Warn("batch_discover_failed", "provider", p.Name, "error", err)
@@ -203,6 +199,60 @@ func (a *Admin) discoverAllModels(w http.ResponseWriter, r *http.Request) {
 		"results": results,
 		"total":   len(results),
 	})
+}
+
+func (a *Admin) refreshOAuthTokens(w http.ResponseWriter, r *http.Request) {
+	providers, err := a.store.ListEnabledProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type refreshResult struct {
+		Provider string `json:"provider"`
+		Success  bool   `json:"success"`
+		Error    string `json:"error,omitempty"`
+	}
+	results := make([]refreshResult, 0)
+	for _, p := range providers {
+		if p.AuthMode != "oauth" {
+			continue
+		}
+		if err := provider.RefreshCodexToken(a.store, p.ID, p.Proxy); err != nil {
+			slog.Warn("token_refresh_failed", "provider", p.Name, "error", err)
+			results = append(results, refreshResult{Provider: p.Name, Error: err.Error()})
+		} else {
+			results = append(results, refreshResult{Provider: p.Name, Success: true})
+			// Re-register with new token
+			a.registry.Delete(p.Name)
+			pUpdated, _ := a.store.GetProvider(p.ID)
+			if pUpdated != nil {
+				a.registerProviderInstance(pUpdated)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results,
+		"count":   len(results),
+	})
+}
+
+func countOauthDiscoveredModels(store *config.Store, p config.Provider) int {
+	var creds map[string]interface{}
+	if json.Unmarshal([]byte(p.APIKey), &creds) == nil {
+		if tokens, ok := creds["tokens"].(map[string]interface{}); ok {
+			if models, ok := tokens["last_discovered_models"].([]interface{}); ok {
+				return len(models)
+			}
+		}
+	}
+	mappings, _ := store.ListModelMappings()
+	count := 0
+	for _, m := range mappings {
+		if m.ProviderID == p.ID {
+			count++
+		}
+	}
+	return count
 }
 
 func (a *Admin) getStatus(w http.ResponseWriter, r *http.Request) {

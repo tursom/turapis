@@ -50,6 +50,9 @@ func (a *Admin) Routes() http.Handler {
 		r.Delete("/model-mappings/{id}", a.deleteModelMapping)
 
 		// 模型发现
+		r.Post("/providers/{id}/quota", a.probeQuota)
+		r.Post("/providers/batch-quota", a.batchProbeQuota)
+		r.Post("/providers/refresh-tokens", a.refreshOAuthTokens)
 		r.Post("/providers/batch-discover", a.discoverAllModels)
 		r.Post("/providers/{id}/discover", a.discoverModels)
 

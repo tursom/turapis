@@ -27,6 +27,8 @@ import (
 	Priority        int    `db:"priority" json:"priority"`
 	Enabled         bool   `db:"enabled" json:"enabled"`
 	SupportedTools  string `db:"supported_tools" json:"supported_tools"`
+	Proxy           string `db:"proxy" json:"proxy"`
+	Quota           *json.RawMessage `db:"-" json:"quota,omitempty"`
 	CreatedAt       string `db:"created_at" json:"created_at"`
 	UpdatedAt       string `db:"updated_at" json:"updated_at"`
 }
@@ -114,11 +116,12 @@ func initSchema(db *sqlx.DB) error {
 	    name        TEXT NOT NULL,
 	    base_url    TEXT NOT NULL,
 	    api_key     TEXT NOT NULL,
-	    protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
+	protocol    TEXT NOT NULL CHECK(protocol IN ('openai', 'anthropic')),
 	    auth_mode   TEXT NOT NULL DEFAULT 'api_key',
 	    priority    INTEGER NOT NULL DEFAULT 100,
 	    enabled     INTEGER NOT NULL DEFAULT 1,
 	    supported_tools TEXT NOT NULL DEFAULT '["web_search"]',
+	    proxy       TEXT NOT NULL DEFAULT '',
 	    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 	    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);
@@ -135,7 +138,8 @@ func initSchema(db *sqlx.DB) error {
 
 	CREATE TABLE IF NOT EXISTS global_settings (
 	    key   TEXT PRIMARY KEY,
-	    value TEXT NOT NULL
+	    value TEXT NOT NULL,
+	    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);
 
 	CREATE TABLE IF NOT EXISTS provider_models (
@@ -211,6 +215,8 @@ func initSchema(db *sqlx.DB) error {
 		return err
 	}
 	db.Exec("ALTER TABLE providers ADD COLUMN supported_tools TEXT NOT NULL DEFAULT '[\"web_search\"]'")
+	db.Exec("ALTER TABLE providers ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE global_settings ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -290,8 +296,8 @@ func (s *Store) CreateProvider(p *Provider) error {
 	p.UpdatedAt = now
 
 	result, err := s.DB.NamedExec(
-		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, created_at, updated_at)
-		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :created_at, :updated_at)`,
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, proxy, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :proxy, :created_at, :updated_at)`,
 		p,
 	)
 	if err != nil {
@@ -360,7 +366,7 @@ func (s *Store) UpdateProvider(p *Provider) error {
 	_, err := s.DB.NamedExec(
 		`UPDATE providers SET name=:name, base_url=:base_url, api_key=:api_key,
 		 protocol=:protocol, auth_mode=:auth_mode, priority=:priority, enabled=:enabled,
-		 supported_tools=:supported_tools, updated_at=:updated_at
+		 supported_tools=:supported_tools, proxy=:proxy, updated_at=:updated_at
 		 WHERE id=:id`,
 		p,
 	)
@@ -475,14 +481,42 @@ func (s *Store) GetSetting(key string) (string, error) {
 // SetSetting 设置全局设置
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.DB.Exec(
-		`INSERT INTO global_settings (key, value) VALUES (?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		`INSERT INTO global_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
 		key, value,
 	)
 	if err != nil {
 		return fmt.Errorf("set setting: %w", err)
 	}
 	return nil
+}
+
+// GetProvidersForModel 返回支持指定模型的 provider ID 集合
+func (s *Store) GetProvidersForModel(modelName string) (map[int]bool, error) {
+	var ids []int
+	err := s.DB.Select(&ids, "SELECT DISTINCT provider_id FROM provider_models WHERE model_name = ?", modelName)
+	if err != nil {
+		return nil, fmt.Errorf("get providers for model: %w", err)
+	}
+	m := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	return m, nil
+}
+
+// GetProvidersWithAnyModel 返回拥有任意 provider_models 记录的 provider ID 集合
+func (s *Store) GetProvidersWithAnyModel() (map[int]bool, error) {
+	var ids []int
+	err := s.DB.Select(&ids, "SELECT DISTINCT provider_id FROM provider_models")
+	if err != nil {
+		return nil, fmt.Errorf("get providers with any model: %w", err)
+	}
+	m := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	return m, nil
 }
 
 // GetDefaultPriorityChain 获取全局默认优先级链
@@ -629,6 +663,71 @@ func (s *Store) ValidateAPIKey(key string) (*APIKey, error) {
 	return &k, nil
 }
 
+func (s *Store) GetProviderAPIKey(id int) (string, error) {
+	var apiKey string
+	err := s.DB.Get(&apiKey, "SELECT api_key FROM providers WHERE id = ?", id)
+	if err != nil {
+		return "", fmt.Errorf("get provider api key: %w", err)
+	}
+	return apiKey, nil
+}
+
+func (s *Store) UpdateProviderAPIKey(id int, apiKey string) error {
+	_, err := s.DB.Exec("UPDATE providers SET api_key = ?, updated_at = datetime('now') WHERE id = ?", apiKey, id)
+	if err != nil {
+		return fmt.Errorf("update provider api key: %w", err)
+	}
+	return nil
+}
+
+// SaveProviderQuota 将配额数据存入 provider 的 api_key JSON 中的 tokens.quota 字段
+func (s *Store) SaveProviderQuota(id int, quotaJSON []byte) error {
+	apiKey, err := s.GetProviderAPIKey(id)
+	if err != nil {
+		return fmt.Errorf("get api_key: %w", err)
+	}
+	var creds map[string]interface{}
+	if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
+		// 不是 JSON（例如纯 api_key mode），跳过
+		return nil
+	}
+	tokens, _ := creds["tokens"].(map[string]interface{})
+	if tokens == nil {
+		tokens = make(map[string]interface{})
+		creds["tokens"] = tokens
+	}
+	var quotaObj interface{}
+	json.Unmarshal(quotaJSON, &quotaObj)
+	tokens["quota"] = quotaObj
+
+	newAPIKey, err := json.Marshal(creds)
+	if err != nil {
+		return fmt.Errorf("marshal credential: %w", err)
+	}
+	return s.UpdateProviderAPIKey(id, string(newAPIKey))
+}
+
+func ParseProviderQuota(apiKey string) *json.RawMessage {
+	var creds map[string]interface{}
+	if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
+		return nil
+	}
+	tokens, ok := creds["tokens"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	q, ok := tokens["quota"]
+	if !ok {
+		return nil
+	}
+	b, err := json.Marshal(q)
+	if err != nil {
+		return nil
+	}
+	raw := json.RawMessage(b)
+	return &raw
+}
+
 // --- Site CRUD ---
 
 func (s *Store) CreateSite(site *Site) error {
@@ -731,8 +830,8 @@ func (s *Store) createProviderTx(tx *sqlx.Tx, p *Provider) error {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	result, err := tx.NamedExec(
-		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, created_at, updated_at)
-		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :created_at, :updated_at)`,
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, proxy, created_at, updated_at)
+		 VALUES (:name, :base_url, :api_key, :protocol, :auth_mode, :priority, :enabled, :supported_tools, :proxy, :created_at, :updated_at)`,
 		p,
 	)
 	if err != nil {
@@ -860,7 +959,7 @@ func (s *Store) SeedBuiltinSites() error {
 			},
 		},
 		{
-			Site: 		Site{Name: "Codex (ChatGPT)", BaseURL: "https://api.openai.com/v1", Protocol: "openai", AuthMode: "oauth", Enabled: true},
+			Site: Site{Name: "Codex (ChatGPT)", BaseURL: "https://chatgpt.com/backend-api/codex", Protocol: "openai", AuthMode: "oauth", Enabled: true},
 			Models: []struct{ ModelID, ModelName string }{
 				{"gpt-4o", "gpt-4o"},
 				{"gpt-4o-mini", "gpt-4o-mini"},
