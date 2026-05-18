@@ -1,126 +1,233 @@
-import { useState, useEffect } from 'react'
-import { fetchModelMappings, createModelMapping, updateModelMapping, deleteModelMapping, fetchProviders, discoverModels, fetchSettings, updateSettings } from '../api/client'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Card, Button, Space, message, Alert, Input } from 'antd'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import {
+  fetchModelMappings,
+  createModelMapping,
+  updateModelMapping,
+  deleteModelMapping,
+  fetchProviders,
+  fetchSettings,
+  updateSettings,
+} from '../api/client'
 import type { ModelMapping, Provider } from '../api/types'
-import Modal from '../components/Modal'
-
-const emptyMapping = { model_name: '', provider_id: 0, priority: 100, enabled: true }
+import { PipelineCanvas, DefaultChainBar, MappingModal } from '../components/pipeline'
 
 export default function Routing() {
-  const [tab, setTab] = useState<'mappings' | 'chain' | 'discover'>('mappings')
-  const [mappings, setMappings] = useState<ModelMapping[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
-  const [showModal, setShowModal] = useState(false)
-  const [editing, setEditing] = useState<ModelMapping | null>(null)
-  const [form, setForm] = useState(emptyMapping)
+  const [mappings, setMappings] = useState<ModelMapping[]>([])
+  const [chainGroups, setChainGroups] = useState<Provider[][]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  const [chainJson, setChainJson] = useState('')
-  const [chainSaved, setChainSaved] = useState(false)
-
-  const [discProvId, setDiscProvId] = useState(0)
-  const [discResult, setDiscResult] = useState<any>(null)
-
-  const loadMappings = () => fetchModelMappings().then(setMappings).catch(e => setError(e.message))
-  const loadProviders = () => fetchProviders().then(setProviders)
-  const loadSettings = () => fetchSettings().then(s => setChainJson(s.default_priority_chain))
-
-  useEffect(() => { loadMappings(); loadProviders(); loadSettings() }, [])
-
-  const openCreate = () => { setEditing(null); setForm({...emptyMapping, provider_id: providers[0]?.id || 0}); setShowModal(true) }
-  const openEdit = (m: ModelMapping) => { setEditing(m); setForm({ model_name: m.model_name, provider_id: m.provider_id, priority: m.priority, enabled: m.enabled }); setShowModal(true) }
-
-  const handleSave = async () => {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editingMapping, setEditingMapping] = useState<ModelMapping | null>(null)
+  const [filterModel, setFilterModel] = useState('')
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setError('')
     try {
-      if (editing) await updateModelMapping({ ...form, id: editing.id, created_at: '' })
-      else await createModelMapping(form)
-      setShowModal(false)
-      loadMappings()
-    } catch (e: any) { setError(e.message) }
-  }
+      const [providersData, mappingsData, settingsData] = await Promise.all([
+        fetchProviders(),
+        fetchModelMappings(),
+        fetchSettings(),
+      ])
+      setProviders(providersData)
+      setMappings(mappingsData)
 
-  const handleSaveChain = async () => {
-    try { await updateSettings(chainJson); setChainSaved(true); setTimeout(() => setChainSaved(false), 2000) }
-    catch (e: any) { setError(e.message) }
-  }
+      let parsedGroups: Provider[][] = []
+      try {
+        const raw = JSON.parse(settingsData.default_priority_chain)
+        if (Array.isArray(raw) && raw.length > 0) {
+          if (Array.isArray(raw[0])) {
+            // 新格式: [[provider_name, ...], ...]
+            parsedGroups = (raw as string[][]).map((group) =>
+              group
+                .map((name) => providersData.find((p) => p.name === name))
+                .filter((p): p is Provider => p !== undefined),
+            ).filter((g) => g.length > 0)
+          } else if (typeof raw[0] === 'number') {
+            // 旧格式: [provider_id, ...]
+            parsedGroups = (raw as number[])
+              .map((id) => providersData.find((p) => p.id === id))
+              .filter((p): p is Provider => p !== undefined)
+              .map((p) => [p])
+          }
+        }
+      } catch {
+        parsedGroups = []
+      }
+      setChainGroups(parsedGroups)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '加载数据失败'
+      setError(msg)
+      message.error(msg)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  const handleDiscover = async () => {
-    if (!discProvId) return
-    try { const r = await discoverModels(discProvId); setDiscResult(r) }
-    catch (e: any) { setError(e.message) }
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  const handleCreateMapping = useCallback(async (modelName: string, providerId: number) => {
+    try {
+      await createModelMapping({
+        model_name: modelName,
+        provider_id: providerId,
+        priority: 100,
+        enabled: true,
+      })
+      message.success(`已创建映射：${modelName} → ${providers.find((p) => p.id === providerId)?.name ?? `#${providerId}`}`)
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '创建映射失败'
+      message.error(msg)
+    }
+  }, [providers])
+
+  const handleSaveMapping = useCallback(async (data: {
+    model_name: string
+    provider_id: number
+    priority: number
+    enabled: boolean
+    id?: number
+  }) => {
+    try {
+      if (data.id) {
+        const existing = mappings.find((m) => m.id === data.id)
+        if (!existing) {
+          message.error('映射不存在')
+          return
+        }
+        await updateModelMapping({
+          ...existing,
+          model_name: data.model_name,
+          provider_id: data.provider_id,
+          priority: data.priority,
+          enabled: data.enabled,
+        })
+        message.success(`已更新映射：${data.model_name}`)
+      } else {
+        await createModelMapping({
+          model_name: data.model_name,
+          provider_id: data.provider_id,
+          priority: data.priority,
+          enabled: data.enabled,
+        })
+        message.success(`已创建映射：${data.model_name}`)
+      }
+      setModalOpen(false)
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '保存映射失败'
+      message.error(msg)
+    }
+  }, [mappings])
+
+  const handleEditMapping = useCallback((mapping: ModelMapping) => {
+    setEditingMapping(mapping)
+    setModalOpen(true)
+  }, [])
+
+  const handleDeleteMapping = useCallback(async (id: number) => {
+    try {
+      await deleteModelMapping(id)
+      message.success('已删除映射')
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '删除映射失败'
+      message.error(msg)
+    }
+  }, [])
+
+  const handleChainChange = useCallback(async (newGroups: Provider[][]) => {
+    try {
+      const serialized = newGroups.map((g) => g.map((p) => p.name))
+      await updateSettings(JSON.stringify(serialized))
+      setChainGroups(newGroups)
+      message.success('故障转移链已更新')
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '更新故障转移链失败'
+      message.error(msg)
+    }
+  }, [])
+
+  const handleOpenCreateModal = useCallback(() => {
+    setEditingMapping(null)
+    setModalOpen(true)
+  }, [])
+
+  const modelNames = useMemo(() => [...new Set(mappings.map((m) => m.model_name))].sort(), [mappings])
+
+  const chainGroupsForDisplay = chainGroups.length > 0
+    ? chainGroups
+    : providers.length > 0
+      ? [providers.sort((a, b) => a.priority - b.priority)]
+      : []
+
+  if (error && !loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', minHeight: 0 }}>
+        <Card title="路由配置 - 可视化管道" extra={<Button icon={<ReloadOutlined />} onClick={loadData}>重试</Button>}>
+          <Alert type="error" message={error} showIcon />
+        </Card>
+      </div>
+    )
   }
 
   return (
-    <div>
-      <h2 style={{ marginBottom: 16 }}>路由配置</h2>
-      {error && <div style={{ color: '#ff4d4f', marginBottom: 8 }}>{error}</div>}
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', minHeight: 0 }}>
+      <Card
+        title="路由配置 - 可视化管道"
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
+        extra={
+          <Space wrap>
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder="搜索模型..."
+              value={filterModel}
+              onChange={(e) => setFilterModel(e.target.value)}
+              allowClear
+              style={{ width: 180 }}
+            />
+            <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>
+              刷新
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreateModal} disabled={providers.length === 0}>
+              添加映射
+            </Button>
+          </Space>
+        }
+      >
+        <PipelineCanvas
+          providers={providers}
+          mappings={mappings}
+          loading={loading}
+          filterModel={filterModel}
+          onCreateMapping={handleCreateMapping}
+          onEditMapping={handleEditMapping}
+          onDeleteMapping={handleDeleteMapping}
+        />
+        <DefaultChainBar
+          providers={providers}
+          groups={chainGroupsForDisplay}
+          onGroupsChange={handleChainChange}
+        />
+      </Card>
 
-      <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid #f0f0f0' }}>
-        {(['mappings', 'chain', 'discover'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{ padding: '8px 16px', border: 'none', background: tab === t ? '#1677ff' : 'transparent', color: tab === t ? '#fff' : '#333', cursor: 'pointer', borderRadius: '4px 4px 0 0' }}>
-            {t === 'mappings' ? '模型映射' : t === 'chain' ? '默认优先级链' : '模型发现'}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'mappings' && (
-        <div>
-          <button onClick={openCreate} style={{ padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', marginBottom: 12 }}>+ 添加映射</button>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ borderBottom: '1px solid #f0f0f0', textAlign: 'left' }}><th style={{ padding: 8 }}>模型</th><th style={{ padding: 8 }}>供应商</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>操作</th></tr></thead>
-            <tbody>
-              {mappings.map(m => (
-                <tr key={m.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: 8 }}>{m.model_name}</td>
-                  <td style={{ padding: 8 }}>{providers.find(p => p.id === m.provider_id)?.name || `#${m.provider_id}`}</td>
-                  <td style={{ padding: 8 }}>{m.priority}</td>
-                  <td style={{ padding: 8 }}>{m.enabled ? '✅' : '❌'}</td>
-                  <td style={{ padding: 8 }}>
-                    <button onClick={() => openEdit(m)} style={{ marginRight: 8 }}>编辑</button>
-                    <button onClick={() => { deleteModelMapping(m.id); loadMappings() }} style={{ color: '#ff4d4f' }}>删除</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tab === 'chain' && (
-        <div>
-          <p style={{ marginBottom: 8, color: '#666' }}>定义默认故障转移顺序的供应商名称 JSON 数组。未匹配到模型专属映射时生效。</p>
-          <textarea value={chainJson} onChange={e => setChainJson(e.target.value)} rows={6} style={{ width: '100%', fontFamily: 'monospace', padding: 8, border: '1px solid #d9d9d9', borderRadius: 6 }} />
-          <button onClick={handleSaveChain} style={{ marginTop: 8, padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>保存</button>
-          {chainSaved && <span style={{ marginLeft: 8, color: '#52c41a' }}>已保存！</span>}
-        </div>
-      )}
-
-      {tab === 'discover' && (
-        <div>
-          <label style={{ display: 'block', marginBottom: 8 }}>供应商：
-            <select value={discProvId} onChange={e => setDiscProvId(+e.target.value)} style={{ marginLeft: 8 }}>
-              <option value={0}>-- 请选择 --</option>
-              {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </label>
-          <button onClick={handleDiscover} disabled={!discProvId} style={{ padding: '6px 16px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>发现模型</button>
-          {discResult && (
-            <div style={{ marginTop: 16 }}>
-              <p>从 {discResult.provider} 发现了 {discResult.count} 个模型：</p>
-              <ul>{discResult.models.map((m: any) => <li key={m.id}>{m.model_name} ({m.model_id})</li>)}</ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={editing ? '编辑映射' : '新建映射'}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <label>模型名称 <input value={form.model_name} onChange={e => setForm({...form, model_name: e.target.value})} style={{ width: '100%' }} /></label>
-          <label>供应商 <select value={form.provider_id} onChange={e => setForm({...form, provider_id: +e.target.value})}>{providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-          <label>优先级 <input type="number" value={form.priority} onChange={e => setForm({...form, priority: +e.target.value})} /></label>
-          <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({...form, enabled: e.target.checked})} /> 启用</label>
-          <button onClick={handleSave} style={{ padding: '8px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>保存</button>
-        </div>
-      </Modal>
+      <MappingModal
+        open={modalOpen}
+        editing={editingMapping}
+        providers={providers}
+        modelNames={modelNames}
+        onClose={() => setModalOpen(false)}
+        onSave={handleSaveMapping}
+      />
     </div>
   )
 }

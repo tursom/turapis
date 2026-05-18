@@ -1,4 +1,15 @@
-import { BrowserRouter, Routes, Route, Navigate, NavLink, Outlet } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react-router-dom'
+import { ConfigProvider, Layout, Menu, Button, Typography } from 'antd'
+import {
+  DashboardOutlined,
+  CloudServerOutlined,
+  NodeIndexOutlined,
+  KeyOutlined,
+  GlobalOutlined,
+  FileTextOutlined,
+  LogoutOutlined,
+  ApiOutlined,
+} from '@ant-design/icons'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
 import Providers from './pages/Providers'
@@ -8,67 +19,111 @@ import ApiKeys from './pages/ApiKeys'
 import Sites from './pages/Sites'
 import AccessLogs from './pages/AccessLogs'
 
+const { Sider, Content } = Layout
+
+const menuItems = [
+  { key: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
+  { key: '/providers', icon: <CloudServerOutlined />, label: '供应商管理' },
+  { key: '/routing', icon: <NodeIndexOutlined />, label: '路由配置' },
+  { key: '/api-keys', icon: <KeyOutlined />, label: 'API Key 管理' },
+  { key: '/sites', icon: <GlobalOutlined />, label: '站点管理' },
+  { key: '/access-logs', icon: <FileTextOutlined />, label: '访问日志' },
+]
+
 function ProtectedLayout() {
   const { isAuthenticated, isLoading, logout } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   if (isLoading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>加载中...</div>
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+        加载中...
+      </div>
+    )
   }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
   }
 
-  const linkStyle = ({ isActive }: { isActive: boolean }) => ({
-    display: 'block',
-    padding: '10px 16px',
-    color: isActive ? '#1677ff' : '#333',
-    background: isActive ? '#e6f4ff' : 'transparent',
-    textDecoration: 'none',
-    borderRadius: 6,
-    marginBottom: 4,
-    fontWeight: isActive ? 600 : 400,
-  })
+  const selectedKey = menuItems.find((item) => location.pathname.startsWith(item.key))?.key ?? '/dashboard'
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      <nav style={{ width: 220, background: '#fafafa', borderRight: '1px solid #f0f0f0', padding: 16 }}>
-        <h1 style={{ fontSize: 18, marginBottom: 24, color: '#1677ff' }}>Turapis</h1>
-        <NavLink to="/dashboard" style={linkStyle}>仪表盘</NavLink>
-        <NavLink to="/providers" style={linkStyle}>供应商管理</NavLink>
-        <NavLink to="/routing" style={linkStyle}>路由配置</NavLink>
-        <NavLink to="/api-keys" style={linkStyle}>API Key 管理</NavLink>
-        <NavLink to="/sites" style={linkStyle}>站点管理</NavLink>
-        <NavLink to="/access-logs" style={linkStyle}>访问日志</NavLink>
-        <div style={{ marginTop: 24 }}>
-          <button onClick={logout} style={{ width: '100%', padding: '8px 0', background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, cursor: 'pointer' }}>退出登录</button>
+    <Layout style={{ minHeight: '100vh' }}>
+      <Sider
+        width={220}
+        style={{
+          background: '#fff',
+          borderRight: '1px solid #f0f0f0',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '16px 20px',
+            borderBottom: '1px solid #f0f0f0',
+          }}
+        >
+          <ApiOutlined style={{ fontSize: 22, color: '#1677ff' }} />
+          <Typography.Text strong style={{ fontSize: 18, color: '#1677ff' }}>
+            Turapis
+          </Typography.Text>
         </div>
-      </nav>
-      <main style={{ flex: 1, padding: 24, background: '#fff' }}>
+        <Menu
+          mode="inline"
+          selectedKeys={[selectedKey]}
+          items={menuItems}
+          onClick={({ key }) => navigate(key)}
+          style={{ border: 'none', marginTop: 8 }}
+        />
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '12px 16px', borderTop: '1px solid #f0f0f0' }}>
+          <Button
+            icon={<LogoutOutlined />}
+            onClick={logout}
+            block
+            style={{ color: '#8c8c8c' }}
+          >
+            退出登录
+          </Button>
+        </div>
+      </Sider>
+      <Content style={{ padding: 24, background: '#f5f5f5', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <Outlet />
-      </main>
-    </div>
+      </Content>
+    </Layout>
   )
 }
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route element={<ProtectedLayout />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/providers" element={<Providers />} />
-            <Route path="/routing" element={<Routing />} />
-            <Route path="/api-keys" element={<ApiKeys />} />
-            <Route path="/sites" element={<Sites />} />
-            <Route path="/access-logs" element={<AccessLogs />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+    <ConfigProvider
+      theme={{
+        token: {
+          colorPrimary: '#1677ff',
+          borderRadius: 6,
+        },
+      }}
+    >
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route element={<ProtectedLayout />}>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/providers" element={<Providers />} />
+              <Route path="/routing" element={<Routing />} />
+              <Route path="/api-keys" element={<ApiKeys />} />
+              <Route path="/sites" element={<Sites />} />
+              <Route path="/access-logs" element={<AccessLogs />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </ConfigProvider>
   )
 }

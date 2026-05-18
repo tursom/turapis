@@ -409,6 +409,9 @@ func (s *Store) GetProvidersWithAnyModel() (map[int]bool, error) {
 }
 
 // GetDefaultPriorityChain 获取全局默认优先级链
+// 支持两种格式：
+//   旧格式: ["provider_a", "provider_b", "provider_c"] — 每个 provider 独立优先级
+//   新格式: [["provider_a", "provider_b"], ["provider_c"]] — 同组共享优先级
 func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 	val, err := s.GetSetting("default_priority_chain")
 	if err != nil {
@@ -427,19 +430,42 @@ func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 		return entries, nil
 	}
 
+	// 尝试新格式 [[group1], [group2], ...]
+	var groups [][]string
+	if err := json.Unmarshal([]byte(val), &groups); err == nil {
+		entries := make([]PriorityChainEntry, 0)
+		for gi, group := range groups {
+			basePriority := (gi + 1) * 10
+			for pi, name := range group {
+				p, err := s.GetProviderByName(name)
+				if err != nil {
+					continue
+				}
+				if p.Enabled {
+					entries = append(entries, PriorityChainEntry{
+						Provider: *p,
+						Priority: basePriority + pi,
+					})
+				}
+			}
+		}
+		return entries, nil
+	}
+
+	// 回退旧格式 []string
 	var providerNames []string
 	if err := json.Unmarshal([]byte(val), &providerNames); err != nil {
 		return nil, fmt.Errorf("parse default_priority_chain: %w", err)
 	}
 
 	entries := make([]PriorityChainEntry, 0, len(providerNames))
-	for _, name := range providerNames {
+	for i, name := range providerNames {
 		p, err := s.GetProviderByName(name)
 		if err != nil {
 			continue // skip unavailable providers
 		}
 		if p.Enabled {
-			entries = append(entries, PriorityChainEntry{Provider: *p, Priority: p.Priority})
+			entries = append(entries, PriorityChainEntry{Provider: *p, Priority: (i + 1) * 10})
 		}
 	}
 	return entries, nil
