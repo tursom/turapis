@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/tursom/turapis/internal/config"
@@ -112,17 +114,17 @@ func collectorFromContext(ctx context.Context) *AccessLogCollector {
 	return nil
 }
 
-// accessLogWriter buffered channel + 后台单 goroutine 串行写入 SQLite
+// accessLogWriter buffered channel + 后台单 goroutine 串行写入 Pebble（batch）
 type accessLogWriter struct {
-	store *config.Store
-	ch    chan config.AccessLog
-	wg    sync.WaitGroup
+	logStore *config.LogStore
+	ch       chan config.AccessLog
+	wg       sync.WaitGroup
 }
 
-func newAccessLogWriter(store *config.Store, bufSize int) *accessLogWriter {
+func newAccessLogWriter(logStore *config.LogStore, bufSize int) *accessLogWriter {
 	w := &accessLogWriter{
-		store: store,
-		ch:    make(chan config.AccessLog, bufSize),
+		logStore: logStore,
+		ch:       make(chan config.AccessLog, bufSize),
 	}
 	w.wg.Add(1)
 	go w.run()
@@ -131,9 +133,57 @@ func newAccessLogWriter(store *config.Store, bufSize int) *accessLogWriter {
 
 func (w *accessLogWriter) run() {
 	defer w.wg.Done()
-	for log := range w.ch {
-		if err := w.store.InsertAccessLog(&log); err != nil {
-			slog.Error("access_log_insert_failed", "err", err, "key", log.ApiKeyName, "model", log.Model)
+
+	var batch *pebble.Batch
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	flush := func() {
+		if batch == nil || batch.Count() == 0 {
+			return
+		}
+		if err := batch.Commit(pebble.NoSync); err != nil {
+			slog.Error("pebble_batch_commit_failed", "err", err)
+		}
+		batch.Close()
+		batch = nil
+	}
+
+	for {
+		select {
+		case logEntry, ok := <-w.ch:
+			if !ok {
+				flush()
+				return
+			}
+			if batch == nil {
+				batch = w.logStore.DB().NewBatch()
+			}
+
+			id := w.logStore.NextID()
+			logEntry.ID = int(id)
+
+			ts, err := time.Parse(time.RFC3339, logEntry.Timestamp)
+			if err != nil {
+				ts = time.Now()
+			}
+			tsNano := uint64(ts.UnixNano())
+
+			jsonData, err := json.Marshal(&logEntry)
+			if err != nil {
+				slog.Error("access_log_marshal_failed", "err", err)
+				continue
+			}
+
+			_ = batch.Set(config.EncodePrimaryKey(tsNano, id), jsonData, nil)
+			_ = batch.Set(config.EncodeIndexKey(id), config.EncodeTimestampValue(tsNano), nil)
+
+			if batch.Count() >= 50 {
+				flush()
+			}
+
+		case <-ticker.C:
+			flush()
 		}
 	}
 }

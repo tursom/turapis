@@ -27,12 +27,12 @@ type Gateway struct {
 }
 
 // New 创建 Gateway
-func New(r *router.Router, adminHandler http.Handler, store *config.Store, staticDir, addr string) *Gateway {
+func New(r *router.Router, adminHandler http.Handler, store *config.Store, logStore *config.LogStore, staticDir, addr string) *Gateway {
 	return &Gateway{
 		router:          r,
 		adminRoutes:     adminHandler,
 		store:           store,
-		accessLogWriter: newAccessLogWriter(store, 256),
+		accessLogWriter: newAccessLogWriter(logStore, 256),
 		staticDir:       staticDir,
 		addr:            addr,
 	}

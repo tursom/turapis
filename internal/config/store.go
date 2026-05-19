@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -71,11 +70,13 @@ type PriorityChainEntry struct {
 
 // Store SQLite 配置存储
 type Store struct {
-	DB *sqlx.DB
+	DB       *sqlx.DB
+	LogStore *LogStore
 }
 
-// NewStore 创建新的 Store，初始化数据库和表
-func NewStore(dbPath string) (*Store, error) {
+// NewStore 创建新的 Store，初始化数据库和表。
+// logDBPath 可选：指定 Pebble 数据库路径用于访问日志存储，留空则使用 SQLite。
+func NewStore(dbPath string, logDBPath ...string) (*Store, error) {
 	var dsn string
 	if dbPath == ":memory:" {
 		dsn = "file::memory:?cache=shared"
@@ -106,11 +107,30 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	return &Store{DB: db}, nil
+	s := &Store{DB: db}
+	if len(logDBPath) > 0 && logDBPath[0] != "" {
+		ls, err := OpenLogStore(logDBPath[0])
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("open log store: %w", err)
+		}
+		s.LogStore = ls
+		if n, err := ls.MigrateFromSQLite(db); err != nil {
+			slog.Warn("access_log_migration_failed", "err", err)
+		} else if n > 0 {
+			slog.Info("access_log_migrated", "from", "sqlite", "to", "pebble", "rows", n)
+		}
+	}
+	return s, nil
 }
 
 // Close 关闭数据库连接
 func (s *Store) Close() error {
+	if s.LogStore != nil {
+		if err := s.LogStore.Close(); err != nil {
+			slog.Warn("logstore_close_failed", "err", err)
+		}
+	}
 	return s.DB.Close()
 }
 
@@ -976,110 +996,35 @@ type AccessLogQuery struct {
 	PerPage  int    `json:"per_page"`
 }
 
-// InsertAccessLog 插入访问日志
+// InsertAccessLog 插入访问日志（委托给 LogStore，如未配置则跳过）
 func (s *Store) InsertAccessLog(log *AccessLog) error {
-	_, err := s.DB.NamedExec(
-		`INSERT INTO access_logs (timestamp, api_key_id, api_key_name, method, path, model, status_code, tokens_in, tokens_out, duration_ms, remote_ip, request_id, provider_name, error_msg, client_req, client_resp, upstream_req, upstream_resp)
-		 VALUES (:timestamp, :api_key_id, :api_key_name, :method, :path, :model, :status_code, :tokens_in, :tokens_out, :duration_ms, :remote_ip, :request_id, :provider_name, :error_msg, :client_req, :client_resp, :upstream_req, :upstream_resp)`,
-		log,
-	)
-	if err != nil {
-		return fmt.Errorf("insert access log: %w", err)
+	if s.LogStore == nil {
+		return nil
 	}
-	return nil
+	return s.LogStore.Insert(log)
 }
 
 // QueryAccessLogs 查询访问日志（分页）
 func (s *Store) QueryAccessLogs(q AccessLogQuery) ([]AccessLog, int, error) {
-	var conditions []string
-	var args []interface{}
-	argIdx := 1
-
-	if q.ApiKeyID != nil {
-		conditions = append(conditions, fmt.Sprintf("api_key_id = $%d", argIdx))
-		args = append(args, *q.ApiKeyID)
-		argIdx++
+	if s.LogStore == nil {
+		return []AccessLog{}, 0, nil
 	}
-	if q.Model != "" {
-		conditions = append(conditions, fmt.Sprintf("model = $%d", argIdx))
-		args = append(args, q.Model)
-		argIdx++
-	}
-	if q.Status != nil {
-		conditions = append(conditions, fmt.Sprintf("status_code = $%d", argIdx))
-		args = append(args, *q.Status)
-		argIdx++
-	}
-	if q.StartAt != "" {
-		conditions = append(conditions, fmt.Sprintf("timestamp >= $%d", argIdx))
-		args = append(args, q.StartAt)
-		argIdx++
-	}
-	if q.EndAt != "" {
-		conditions = append(conditions, fmt.Sprintf("timestamp <= $%d", argIdx))
-		args = append(args, q.EndAt)
-		argIdx++
-	}
-
-	where := ""
-	if len(conditions) > 0 {
-		where = " WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	var total int
-	countQuery := "SELECT COUNT(*) FROM access_logs" + where
-	if err := s.DB.Get(&total, countQuery, args...); err != nil {
-		return nil, 0, fmt.Errorf("count access logs: %w", err)
-	}
-
-	if q.Page < 1 {
-		q.Page = 1
-	}
-	if q.PerPage < 1 || q.PerPage > 100 {
-		q.PerPage = 20
-	}
-	offset := (q.Page - 1) * q.PerPage
-
-	limitArg := fmt.Sprintf("$%d", argIdx)
-	offsetArg := fmt.Sprintf("$%d", argIdx+1)
-
-	selectQuery := "SELECT * FROM access_logs" + where + " ORDER BY id DESC LIMIT " + limitArg + " OFFSET " + offsetArg
-
-	var logs []AccessLog
-	if err := s.DB.Select(&logs, selectQuery, append(args, q.PerPage, offset)...); err != nil {
-		return nil, 0, fmt.Errorf("query access logs: %w", err)
-	}
-	if logs == nil {
-		logs = []AccessLog{}
-	}
-
-	return logs, total, nil
+	return s.LogStore.Query(q)
 }
 
 // CleanupOldLogs 清理保留天数之前的日志，返回删除行数
 func (s *Store) CleanupOldLogs(retentionDays int) (int64, error) {
-	result, err := s.DB.Exec(
-		"DELETE FROM access_logs WHERE timestamp < datetime('now', ?)",
-		fmt.Sprintf("-%d days", retentionDays),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup old logs: %w", err)
+	if s.LogStore == nil {
+		return 0, nil
 	}
-	n, _ := result.RowsAffected()
-	return n, nil
+	return s.LogStore.Cleanup(retentionDays)
 }
 
-// GetAccessLog 获取单条访问日志（包含详细请求/返回体）
 func (s *Store) GetAccessLog(id int) (*AccessLog, error) {
-	var log AccessLog
-	err := s.DB.Get(&log, "SELECT * FROM access_logs WHERE id = ?", id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("access log %d not found", id)
-		}
-		return nil, fmt.Errorf("get access log: %w", err)
+	if s.LogStore == nil {
+		return nil, fmt.Errorf("access log %d not found", id)
 	}
-	return &log, nil
+	return s.LogStore.Get(id)
 }
 
 // StartCleanup 启动定时清理任务

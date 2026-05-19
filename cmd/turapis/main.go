@@ -38,7 +38,7 @@ func main() {
 		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
-	store, err := config.NewStore(*dbPath)
+	store, err := config.NewStore(*dbPath, *dbPath+".logs")
 	if err != nil {
 		log.Fatalf("init store: %v", err)
 	}
@@ -89,7 +89,7 @@ func main() {
 	adminAuth := admin.NewAdminAuth(store)
 	defer adminAuth.Shutdown()
 	adm := admin.New(store, registry, adminAuth)
-	gw := gateway.New(r, adm.Routes(), store, *staticDir, *addr)
+	gw := gateway.New(r, adm.Routes(), store, store.LogStore, *staticDir, *addr)
 
 	store.StartCleanup(context.Background(), 1*time.Hour, 30)
 
