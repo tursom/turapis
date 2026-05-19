@@ -9,6 +9,7 @@ import {
   FileTextOutlined,
   LogoutOutlined,
   ApiOutlined,
+  UserOutlined,
 } from '@ant-design/icons'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
@@ -18,6 +19,7 @@ import Dashboard from './pages/Dashboard'
 import ApiKeys from './pages/ApiKeys'
 import Sites from './pages/Sites'
 import AccessLogs from './pages/AccessLogs'
+import Users from './pages/Users'
 
 const { Sider, Content } = Layout
 
@@ -28,10 +30,11 @@ const menuItems = [
   { key: '/api-keys', icon: <KeyOutlined />, label: 'API Key 管理' },
   { key: '/sites', icon: <GlobalOutlined />, label: '站点管理' },
   { key: '/access-logs', icon: <FileTextOutlined />, label: '访问日志' },
+  { key: '/users', icon: <UserOutlined />, label: '用户管理' },
 ]
 
 function ProtectedLayout() {
-  const { isAuthenticated, isLoading, logout } = useAuth()
+  const { isAuthenticated, isLoading, username, role, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -80,6 +83,11 @@ function ProtectedLayout() {
           style={{ border: 'none', marginTop: 8 }}
         />
         <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '12px 16px', borderTop: '1px solid #f0f0f0' }}>
+          <div style={{ marginBottom: 8, fontSize: 13 }}>
+            <UserOutlined style={{ marginRight: 6 }} />
+            {username}
+            <span style={{ marginLeft: 6, color: '#999', fontSize: 12 }}>({role === 'admin' ? '管理员' : '普通用户'})</span>
+          </div>
           <Button
             icon={<LogoutOutlined />}
             onClick={logout}
@@ -119,6 +127,7 @@ export default function App() {
               <Route path="/api-keys" element={<ApiKeys />} />
               <Route path="/sites" element={<Sites />} />
               <Route path="/access-logs" element={<AccessLogs />} />
+              <Route path="/users" element={<Users />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -27,7 +27,7 @@ func TestLogin_Success(t *testing.T) {
 	auth, _ := setupTestAuth(t)
 
 	w := httptest.NewRecorder()
-	body := `{"password":"admin"}`
+	body := `{"username":"admin","password":"admin"}`
 	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.RemoteAddr = "127.0.0.1:12345"
@@ -56,7 +56,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	auth, _ := setupTestAuth(t)
 
 	w := httptest.NewRecorder()
-	body := `{"password":"wrong"}`
+	body := `{"username":"admin","password":"wrong"}`
 	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.RemoteAddr = "127.0.0.2:12345"
@@ -75,7 +75,7 @@ func TestLogin_RateLimit(t *testing.T) {
 	// 发送 5 次错误尝试
 	for i := 0; i < 5; i++ {
 		w := httptest.NewRecorder()
-		body := `{"password":"wrong"}`
+		body := `{"username":"admin","password":"wrong"}`
 		r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 		r.RemoteAddr = "127.0.0.3:12345"
@@ -84,7 +84,7 @@ func TestLogin_RateLimit(t *testing.T) {
 
 	// 第 6 次应被限速
 	w := httptest.NewRecorder()
-	body := `{"password":"wrong"}`
+	body := `{"username":"admin","password":"wrong"}`
 	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.RemoteAddr = "127.0.0.3:12345"
@@ -101,7 +101,7 @@ func TestMiddleware_ValidSession(t *testing.T) {
 
 	// 先登录获取 session
 	w := httptest.NewRecorder()
-	body := `{"password":"admin"}`
+	body := `{"username":"admin","password":"admin"}`
 	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.RemoteAddr = "127.0.0.4:12345"
@@ -166,7 +166,7 @@ func TestLogout(t *testing.T) {
 
 	// 先登录
 	w := httptest.NewRecorder()
-	body := `{"password":"admin"}`
+	body := `{"username":"admin","password":"admin"}`
 	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.RemoteAddr = "127.0.0.5:12345"

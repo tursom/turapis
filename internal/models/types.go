@@ -52,6 +52,8 @@ const (
 	ctxKeyCodexVersion
 	ctxKeyRawProxy
 	ctxKeyKeyPermissions
+	ctxKeySessionUserID
+	ctxKeySessionRole
 )
 
 // KeyPermissions represents per-API-key access restrictions.
@@ -206,7 +208,29 @@ const (
 	ProtocolAnthropic ProtocolType = "anthropic"
 )
 
-// ModelInfo 模型信息
+// SessionUser holds the currently authenticated user's identity extracted from a session.
+type SessionUser struct {
+	UserID int64
+	Role   string
+}
+
+func WithSessionUser(ctx context.Context, u *SessionUser) context.Context {
+	if u != nil {
+		ctx = context.WithValue(ctx, ctxKeySessionUserID, u.UserID)
+		ctx = context.WithValue(ctx, ctxKeySessionRole, u.Role)
+	}
+	return ctx
+}
+
+func SessionUserFromContext(ctx context.Context) *SessionUser {
+	id, okID := ctx.Value(ctxKeySessionUserID).(int64)
+	role, okRole := ctx.Value(ctxKeySessionRole).(string)
+	if !okID || !okRole {
+		return nil
+	}
+	return &SessionUser{UserID: id, Role: role}
+}
+
 type ModelInfo struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`

@@ -130,3 +130,17 @@ export interface DiscoverResult {
   models: { id: number; model_id: string; model_name: string }[]
   count: number
 }
+
+export interface User {
+  id: number
+  username: string
+  role: 'admin' | 'user'
+  enabled: boolean
+  created_at: string
+}
+
+export interface LoginResponse {
+  status: string
+  username: string
+  role: 'admin' | 'user'
+}

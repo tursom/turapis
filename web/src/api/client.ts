@@ -1,4 +1,4 @@
-import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult, QuotaInfo } from './types'
+import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult, QuotaInfo, User, LoginResponse } from './types'
 
 const API_BASE = ''
 
@@ -24,10 +24,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // --- Auth ---
-export function login(password: string) {
-  return request<{ status: string }>('/admin/login', {
+export function login(username: string, password: string) {
+  return request<LoginResponse>('/admin/login', {
     method: 'POST',
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   })
 }
 
@@ -175,4 +175,21 @@ export function batchProbeQuota(body?: { provider_ids?: number[] }) {
 
 export function createProviderFromSite(siteId: number, data: { name_override?: string; api_key?: string; oauth?: object }) {
   return request<CreateProviderFromSiteResult>(`/admin/sites/${siteId}/create-provider`, { method: 'POST', body: JSON.stringify(data) })
+}
+
+// --- Users ---
+export function fetchUsers() {
+  return request<User[]>('/admin/users')
+}
+
+export function createUser(data: { username: string; password: string; role: string }) {
+  return request<User>('/admin/users', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export function updateUser(id: number, data: { username?: string; password?: string; role?: string; enabled?: boolean }) {
+  return request<User>(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function deleteUser(id: number) {
+  return request<{ status: string }>(`/admin/users/${id}`, { method: 'DELETE' })
 }

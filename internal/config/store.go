@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/crypto/bcrypt"
 
 	_ "modernc.org/sqlite"
 )
@@ -136,10 +137,10 @@ func (s *Store) Close() error {
 
 // --- Session CRUD ---
 
-func (s *Store) CreateSession(token string, expiresAt time.Time) error {
+func (s *Store) CreateSession(token string, userID int64, expiresAt time.Time) error {
 	_, err := s.DB.Exec(
-		"INSERT INTO sessions (token, expires_at) VALUES (?, ?)",
-		token, expiresAt.UTC().Format(time.RFC3339),
+		"INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+		token, userID, expiresAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -177,6 +178,26 @@ func (s *Store) ValidateSession(token string) bool {
 		return false
 	}
 	return time.Now().Before(t)
+}
+
+type SessionInfo struct {
+	UserID   int64  `db:"user_id"`
+	Role     string `db:"role"`
+	Username string `db:"username"`
+}
+
+func (s *Store) GetSessionUser(token string) (*SessionInfo, error) {
+	var info SessionInfo
+	err := s.DB.Get(&info,
+		`SELECT u.id AS "user_id", u.role, u.username
+		 FROM sessions s JOIN users u ON u.id = s.user_id
+		 WHERE s.token = ? AND s.expires_at > datetime('now') AND u.enabled = 1`,
+		token,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get session user: %w", err)
+	}
+	return &info, nil
 }
 
 func (s *Store) RefreshSession(token string, ttls ...time.Duration) bool {
@@ -527,6 +548,16 @@ func (s *Store) GetProviderModels(providerID int) ([]struct {
 	return models, nil
 }
 
+// User represents an admin panel user with role-based access.
+type User struct {
+	ID           int64  `db:"id"            json:"id"`
+	Username     string `db:"username"      json:"username"`
+	PasswordHash string `db:"password_hash" json:"-"`
+	Role         string `db:"role"          json:"role"`
+	Enabled      bool   `db:"enabled"       json:"enabled"`
+	CreatedAt    string `db:"created_at"    json:"created_at"`
+}
+
 // APIKey 下游客户端 API 密钥
 type APIKey struct {
 	ID          int     `db:"id" json:"id"`
@@ -677,6 +708,114 @@ func (s *Store) ValidateAPIKey(key string) (*APIKey, error) {
 		return nil, fmt.Errorf("validate api key: %w", err)
 	}
 	return &k, nil
+}
+
+// --- User CRUD ---
+
+func (s *Store) CreateUser(username, password, role string) (int64, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, fmt.Errorf("hash password: %w", err)
+	}
+	result, err := s.DB.Exec(
+		"INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+		username, string(hash), role,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("create user: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	return id, nil
+}
+
+func (s *Store) GetUser(id int64) (*User, error) {
+	var u User
+	err := s.DB.Get(&u, "SELECT * FROM users WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user %d not found", id)
+		}
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	return &u, nil
+}
+
+func (s *Store) GetUserByUsername(username string) (*User, error) {
+	var u User
+	err := s.DB.Get(&u, "SELECT * FROM users WHERE username = ?", username)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user %q not found", username)
+		}
+		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	return &u, nil
+}
+
+func (s *Store) ListUsers() ([]User, error) {
+	var users []User
+	err := s.DB.Select(&users, "SELECT * FROM users ORDER BY created_at ASC")
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	if users == nil {
+		users = []User{}
+	}
+	return users, nil
+}
+
+func (s *Store) UpdateUser(id int64, username string, enabled bool, role string, password string) error {
+	if password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("hash password: %w", err)
+		}
+		_, err = s.DB.Exec(
+			"UPDATE users SET username = ?, enabled = ?, role = ?, password_hash = ? WHERE id = ?",
+			username, enabled, role, string(hash), id,
+		)
+		return err
+	}
+	result, err := s.DB.Exec(
+		"UPDATE users SET username = ?, enabled = ?, role = ? WHERE id = ?",
+		username, enabled, role, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("user %d not found", id)
+	}
+	return nil
+}
+
+func (s *Store) DeleteUser(id int64) error {
+	_, err := s.DB.Exec("DELETE FROM users WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ValidateUserPassword(username, password string) (*User, error) {
+	u, err := s.GetUserByUsername(username)
+	if err != nil {
+		return nil, err
+	}
+	if !u.Enabled {
+		return nil, fmt.Errorf("user %q is disabled", username)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+		return nil, fmt.Errorf("invalid password")
+	}
+	return u, nil
+}
+
+func (s *Store) CountUsers() (int, error) {
+	var count int
+	err := s.DB.Get(&count, "SELECT COUNT(*) FROM users")
+	return count, err
 }
 
 func (s *Store) GetProviderAPIKey(id int) (string, error) {

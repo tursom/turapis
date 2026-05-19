@@ -12,17 +12,16 @@ import (
 	"time"
 
 	"github.com/tursom/turapis/internal/config"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/tursom/turapis/internal/models"
 )
 
 const (
-	sessionCookieName     = "session"
-	defaultSessionTTL     = 30 * 24 * time.Hour
-	rateWindow            = 1 * time.Minute
-	rateMaxAttempts       = 5
+	sessionCookieName = "session"
+	defaultSessionTTL = 30 * 24 * time.Hour
+	rateWindow        = 1 * time.Minute
+	rateMaxAttempts   = 5
 )
 
-// getSessionTTL 从环境变量读取 session 有效期，默认 30 天
 func getSessionTTL() time.Duration {
 	if v := os.Getenv("TURAPIS_SESSION_TTL"); v != "" {
 		if hours, err := strconv.Atoi(v); err == nil && hours > 0 {
@@ -32,48 +31,51 @@ func getSessionTTL() time.Duration {
 	return defaultSessionTTL
 }
 
-// AdminAuth 管理后台鉴权（DB 持久化 session + 登录限速）
 type AdminAuth struct {
 	store     *config.Store
 	mu        sync.Mutex
-	attempts  map[string][]time.Time // IP → recent attempts
+	attempts  map[string][]time.Time
 	cleanupCh chan struct{}
 }
 
-// NewAdminAuth 初始化鉴权系统
 func NewAdminAuth(store *config.Store) *AdminAuth {
 	a := &AdminAuth{
 		store:     store,
 		attempts:  make(map[string][]time.Time),
 		cleanupCh: make(chan struct{}),
 	}
-	a.initPassword()
+	a.initAdminUser()
 	go a.cleanupLoop()
 	return a
 }
 
-// 密码初始化
-func (a *AdminAuth) initPassword() {
-	// 1. 检查是否已有 hash
-	if hash, err := a.store.GetSetting("admin_password_hash"); err == nil && hash != "" {
+func (a *AdminAuth) initAdminUser() {
+	count, err := a.store.CountUsers()
+	if err != nil {
+		slog.Error("check_user_count", "err", err)
+		return
+	}
+	if count > 0 {
 		return
 	}
 
-	// 2. 从环境变量初始化
-	var password string
-	// password will be set from env or default
-	// 3. 默认密码
-	password = "admin"
-	slog.Warn("admin password not configured — using default 'admin'. Set TURAPIS_ADMIN_PASSWORD environment variable.")
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	a.store.SetSetting("admin_password_hash", string(hash))
+	password := os.Getenv("TURAPIS_ADMIN_PASSWORD")
+	if password == "" {
+		password = "admin"
+		slog.Warn("default admin password in use — set TURAPIS_ADMIN_PASSWORD to override")
+	}
+
+	_, err = a.store.CreateUser("admin", password, "admin")
+	if err != nil {
+		slog.Error("create_default_admin", "err", err)
+		return
+	}
+	slog.Info("default admin user created", "username", "admin")
 }
 
-// Login 处理 POST /admin/login
 func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 	ip := r.RemoteAddr
 
-	// 限速检查
 	a.mu.Lock()
 	now := time.Now()
 	windowStart := now.Add(-rateWindow)
@@ -93,44 +95,34 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 解析请求体
 	var body struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Username == "" || body.Password == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "username and password are required"})
 		return
 	}
 
-	// 验证密码
-	storedHash, err := a.store.GetSetting("admin_password_hash")
-	if err != nil || storedHash == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "password not configured"})
-		return
-	}
-
-	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(body.Password)) != nil {
-		// 记录失败尝试
+	user, err := a.store.ValidateUserPassword(body.Username, body.Password)
+	if err != nil {
 		a.mu.Lock()
 		a.attempts[ip] = append(a.attempts[ip], now)
 		a.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid password"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid username or password"})
 		return
 	}
 
-	// 密码正确 → 生成 session token，持久化到 DB
 	token := randomToken(32)
 	ttl := getSessionTTL()
 	expiresAt := now.Add(ttl)
 
-	if err := a.store.CreateSession(token, expiresAt); err != nil {
+	if err := a.store.CreateSession(token, user.ID, expiresAt); err != nil {
 		slog.Error("create_session", "err", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -149,17 +141,19 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "ok",
+		"username": user.Username,
+		"role":     user.Role,
+	})
 }
 
-// Logout 处理 POST /admin/logout
 func (a *AdminAuth) Logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err == nil {
 		_ = a.store.DeleteSession(cookie.Value)
 	}
 
-	// 清除 Cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -173,7 +167,6 @@ func (a *AdminAuth) Logout(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// Middleware chi 中间件 —— 检查 session
 func (a *AdminAuth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
@@ -191,11 +184,23 @@ func (a *AdminAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Sliding expiration: refresh DB session expiry
+		info, err := a.store.GetSessionUser(cookie.Value)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		ctx := models.WithSessionUser(r.Context(), &models.SessionUser{
+			UserID: info.UserID,
+			Role:   info.Role,
+		})
+		r = r.WithContext(ctx)
+
 		ttl := getSessionTTL()
 		go a.store.RefreshSession(cookie.Value, ttl)
 
-		// Refresh browser cookie so its MaxAge also slides
 		http.SetCookie(w, &http.Cookie{
 			Name:     sessionCookieName,
 			Value:    cookie.Value,
@@ -209,12 +214,23 @@ func (a *AdminAuth) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// Shutdown 停止后台清理
+func (a *AdminAuth) RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := models.SessionUserFromContext(r.Context())
+		if u == nil || u.Role != "admin" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "admin access required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (a *AdminAuth) Shutdown() {
 	close(a.cleanupCh)
 }
 
-// 后台清理过期 session（每 5 分钟）
 func (a *AdminAuth) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

@@ -4,7 +4,9 @@ import { login as apiLogin, logout as apiLogout, fetchStatus } from '../api/clie
 interface AuthContextType {
   isAuthenticated: boolean
   isLoading: boolean
-  login: (password: string) => Promise<void>
+  username: string
+  role: string
+  login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -13,6 +15,8 @@ const AuthContext = createContext<AuthContextType | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [username, setUsername] = useState('')
+  const [role, setRole] = useState('')
 
   useEffect(() => {
     fetchStatus()
@@ -21,18 +25,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setIsLoading(false))
   }, [])
 
-  const login = async (password: string) => {
-    await apiLogin(password)
+  const login = async (username: string, password: string) => {
+    const res = await apiLogin(username, password)
+    setUsername(res.username)
+    setRole(res.role)
     setIsAuthenticated(true)
   }
 
   const logout = async () => {
     await apiLogout()
+    setUsername('')
+    setRole('')
     setIsAuthenticated(false)
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, username, role, login, logout }}>
       {children}
     </AuthContext.Provider>
   )
