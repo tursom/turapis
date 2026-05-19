@@ -120,9 +120,13 @@ func execMigration(db *sqlx.DB, m migration) error {
 }
 
 func isColumnExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "duplicate column name") ||
-		strings.Contains(msg, "already exists")
+		strings.Contains(msg, "already exists") ||
+		strings.Contains(msg, "no such table")
 }
 
 func setSchemaVersion(db *sqlx.DB, version int) error {

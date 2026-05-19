@@ -75,25 +75,3 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-
-CREATE TABLE IF NOT EXISTS access_logs (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
-    api_key_id    INTEGER DEFAULT NULL,
-    api_key_name  TEXT NOT NULL DEFAULT '',
-    method        TEXT NOT NULL,
-    path          TEXT NOT NULL,
-    model         TEXT NOT NULL DEFAULT '',
-    status_code   INTEGER NOT NULL DEFAULT 0,
-    tokens_in     INTEGER NOT NULL DEFAULT 0,
-    tokens_out    INTEGER NOT NULL DEFAULT 0,
-    duration_ms   INTEGER NOT NULL DEFAULT 0,
-    remote_ip     TEXT NOT NULL DEFAULT '',
-    request_id    TEXT NOT NULL DEFAULT '',
-    provider_name TEXT NOT NULL DEFAULT '',
-    error_msg     TEXT NOT NULL DEFAULT '',
-    raw_body      TEXT NOT NULL DEFAULT '',
-    raw_response  TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_access_logs_timestamp ON access_logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_id ON access_logs(api_key_id);
