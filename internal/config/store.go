@@ -1180,6 +1180,18 @@ func (s *Store) SeedBuiltinSites() error {
 
 // --- Access Logs ---
 
+// AttemptRecord 单次 provider 尝试记录（成功或失败），存入 access log
+type AttemptRecord struct {
+	Provider    string `json:"provider"`
+	StatusCode  int    `json:"status_code"`
+	Error       string `json:"error,omitempty"`
+	DurationMs  int64  `json:"duration_ms"`
+	QuotaBefore string `json:"quota_before,omitempty"`
+	QuotaAfter  string `json:"quota_after,omitempty"`
+	Success     bool   `json:"success"`
+	AttemptNum  int    `json:"attempt_num"`
+}
+
 // AccessLog API 访问日志
 type AccessLog struct {
 	ID           int    `db:"id" json:"id"`
@@ -1205,6 +1217,7 @@ type AccessLog struct {
 	UpstreamResp string `db:"upstream_resp" json:"upstream_resp"`
 	QuotaBefore  string `db:"quota_before" json:"quota_before"`
 	QuotaAfter   string `db:"quota_after" json:"quota_after"`
+	AttemptsJSON string `db:"attempts_json" json:"attempts_json,omitempty"`
 }
 
 // AccessLogQuery 访问日志查询参数

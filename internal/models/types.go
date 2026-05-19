@@ -54,7 +54,11 @@ const (
 	ctxKeyKeyPermissions
 	ctxKeySessionUserID
 	ctxKeySessionRole
+	ctxKeyAttemptRecorder
 )
+
+// AttemptRecorder is called by the router for each provider attempt (success or failure).
+type AttemptRecorder func(provider string, statusCode int, errMsg string, durationMs int64, quotaBefore, quotaAfter string, success bool, attemptNum int)
 
 // KeyPermissions represents per-API-key access restrictions.
 type KeyPermissions struct {
@@ -229,6 +233,17 @@ func SessionUserFromContext(ctx context.Context) *SessionUser {
 		return nil
 	}
 	return &SessionUser{UserID: id, Role: role}
+}
+
+func WithAttemptRecorder(ctx context.Context, r AttemptRecorder) context.Context {
+	return context.WithValue(ctx, ctxKeyAttemptRecorder, r)
+}
+
+func AttemptRecorderFromContext(ctx context.Context) AttemptRecorder {
+	if r, ok := ctx.Value(ctxKeyAttemptRecorder).(AttemptRecorder); ok {
+		return r
+	}
+	return nil
 }
 
 type ModelInfo struct {

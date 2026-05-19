@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/models"
@@ -57,23 +58,28 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range chain {
+	for i, p := range chain {
 		type rawStreamer interface {
 			RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error)
 		}
 		if rs, ok := p.(rawStreamer); ok {
+			start := time.Now()
 			quotaBefore := r.getProviderQuotaJSON(p.Name())
 			resp, err := rs.RawResponsesStream(ctx, rawBody)
+			duration := time.Since(start)
 			if err != nil {
+				recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, i+1)
 				continue
 			}
 			r.saveQuotaFromHeaders(p.Name(), resp.Header)
 			quotaAfter := r.getProviderQuotaJSON(p.Name())
 			if resp.StatusCode != 200 {
+				recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, i+1)
 				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
 				resp.Body.Close()
 				continue
 			}
+			recordAttempt(ctx, p.Name(), resp.StatusCode, nil, duration, quotaBefore, quotaAfter, true, i+1)
 			return &RawStreamResult{
 				Body:         resp.Body,
 				ProviderName: p.Name(),

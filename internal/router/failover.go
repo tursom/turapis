@@ -90,7 +90,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	var lastErr error
 	var attempts []AttemptInfo
 
-	for _, p := range chain {
+	for i, p := range chain {
 		start := time.Now()
 		quotaBefore := r.getProviderQuotaJSON(p.Name())
 		resp, err := p.ChatCompletion(ctx, req)
@@ -99,6 +99,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 		quotaAfter := r.getProviderQuotaJSON(p.Name())
 
 		if err == nil {
+			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
 			slog.Info("route_success",
 				"model", req.Model,
 				"used_provider", p.Name(),
@@ -113,6 +114,8 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 				QuotaAfter:   quotaAfter,
 			}, nil
 		}
+
+		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, i+1)
 
 		cat := models.ClassifyError(err)
 		attempts = append(attempts, AttemptInfo{
@@ -163,6 +166,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 		r.saveQuotaFromProvider(p)
 		quotaAfter := r.getProviderQuotaJSON(p.Name())
 		if err == nil {
+			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
 			if i > 0 {
 				slog.Info("stream_failover",
 					"model", req.Model,
@@ -177,6 +181,8 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 				QuotaAfter:   quotaAfter,
 			}, nil
 		}
+
+		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, i+1)
 
 		cat := models.ClassifyError(err)
 		attempts = append(attempts, AttemptInfo{
@@ -219,4 +225,27 @@ func formatError(err error) string {
 		}
 	}
 	return strings.Join(parts, " | ")
+}
+
+func statusCodeFromErr(err error) int {
+	var ue *models.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode
+	}
+	return 0
+}
+
+func recordAttempt(ctx context.Context, providerName string, statusCode int, err error, duration time.Duration, quotaBefore, quotaAfter string, success bool, attemptNum int) {
+	rec := models.AttemptRecorderFromContext(ctx)
+	if rec == nil {
+		return
+	}
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+		if statusCode == 0 {
+			statusCode = statusCodeFromErr(err)
+		}
+	}
+	rec(providerName, statusCode, errMsg, duration.Milliseconds(), quotaBefore, quotaAfter, success, attemptNum)
 }

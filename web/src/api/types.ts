@@ -94,6 +94,17 @@ export interface ServiceStatus {
   providers: ProviderStatus[]
 }
 
+export interface AttemptRecord {
+  provider: string
+  status_code: number
+  error: string
+  duration_ms: number
+  quota_before: string
+  quota_after: string
+  success: boolean
+  attempt_num: number
+}
+
 export interface AccessLog {
   id: number
   timestamp: string
@@ -116,6 +127,7 @@ export interface AccessLog {
   upstream_resp: string
   quota_before: string
   quota_after: string
+  attempts_json: string
 }
 
 export interface AccessLogResponse {

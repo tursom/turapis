@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,7 +40,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if unified.Stream {
-		g.handleStreamMessages(w, r, unified)
+		g.handleStreamMessages(w, r.WithContext(ctxWithAttemptRecorder(r.Context())), unified)
 		return
 	}
 
@@ -53,7 +52,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 非流式路由
-	result, err := g.router.Route(context.Background(), unified)
+	result, err := g.router.Route(ctxWithAttemptRecorder(r.Context()), unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/messages", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {
@@ -78,7 +77,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleStreamMessages(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	streamResult, err := g.router.RouteStream(context.Background(), unified)
+	streamResult, err := g.router.RouteStream(ctxWithAttemptRecorder(r.Context()), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/messages", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {

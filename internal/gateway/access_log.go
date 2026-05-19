@@ -12,6 +12,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/tursom/turapis/internal/config"
+	"github.com/tursom/turapis/internal/models"
 )
 
 // AccessLogCollector 线程安全的请求元数据收集器
@@ -28,6 +29,7 @@ type AccessLogCollector struct {
 	upstreamResp    string
 	quotaBefore     string
 	quotaAfter      string
+	attempts        []config.AttemptRecord
 }
 
 func (c *AccessLogCollector) SetClientBody(b string) {
@@ -86,6 +88,12 @@ func (c *AccessLogCollector) SetQuota(before, after string) {
 	c.mu.Unlock()
 }
 
+func (c *AccessLogCollector) RecordAttempt(a config.AttemptRecord) {
+	c.mu.Lock()
+	c.attempts = append(c.attempts, a)
+	c.mu.Unlock()
+}
+
 func (c *AccessLogCollector) Model() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -121,6 +129,25 @@ func collectorFromContext(ctx context.Context) *AccessLogCollector {
 		return c
 	}
 	return nil
+}
+
+func ctxWithAttemptRecorder(ctx context.Context) context.Context {
+	c := collectorFromContext(ctx)
+	if c == nil {
+		return ctx
+	}
+	return models.WithAttemptRecorder(ctx, func(provider string, statusCode int, errMsg string, durationMs int64, quotaBefore, quotaAfter string, success bool, attemptNum int) {
+		c.RecordAttempt(config.AttemptRecord{
+			Provider:    provider,
+			StatusCode:  statusCode,
+			Error:       errMsg,
+			DurationMs:  durationMs,
+			QuotaBefore: quotaBefore,
+			QuotaAfter:  quotaAfter,
+			Success:     success,
+			AttemptNum:  attemptNum,
+		})
+	})
 }
 
 // accessLogWriter buffered channel + 后台单 goroutine 串行写入 Pebble（batch）
@@ -294,7 +321,14 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		upstreamResp := collector.upstreamResp
 		quotaBefore := collector.quotaBefore
 		quotaAfter := collector.quotaAfter
+		attemptsCopy := collector.attempts
 		collector.mu.Unlock()
+
+		var attemptsJSON string
+		if len(attemptsCopy) > 0 {
+			b, _ := json.Marshal(attemptsCopy)
+			attemptsJSON = string(b)
+		}
 
 		// 如果 handler 未显式设置 clientResponse，使用 recorder 捕获的响应体
 		if clientResp == "" && rec.StatusCode() < 300 {
@@ -322,6 +356,7 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 			UpstreamResp: upstreamResp,
 			QuotaBefore:  quotaBefore,
 			QuotaAfter:   quotaAfter,
+			AttemptsJSON: attemptsJSON,
 		}
 
 		select {

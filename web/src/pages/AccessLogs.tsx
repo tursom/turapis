@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { fetchAccessLogs, fetchAccessLogDetail } from '../api/accessLogs'
 import { fetchAPIKeys } from '../api/client'
-import type { AccessLog, APIKeyListItem } from '../api/types'
+import type { AccessLog, APIKeyListItem, AttemptRecord } from '../api/types'
 
 const STATUS_OPTIONS = [
   { value: 0, label: '全部' },
@@ -105,6 +105,33 @@ export default function AccessLogs() {
     } catch {
       return null
     }
+  }
+
+  const parseAttempts = (raw: string): AttemptRecord[] => {
+    if (!raw) return []
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return []
+    }
+  }
+
+  const renderFailoverMini = (raw: string) => {
+    const attempts = parseAttempts(raw)
+    if (attempts.length === 0) return <span style={{ color: '#ccc', fontSize: 11 }}>-</span>
+    const short = (name: string) => name.split('@')[0].slice(0, 10)
+    const colorFor = (a: AttemptRecord) => a.success ? '#52c41a' : '#ff4d4f'
+    return (
+      <span style={{ fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+        {attempts.map((a, i) => (
+          <span key={i}>
+            <span style={{ color: colorFor(a) }}>{short(a.provider)}</span>
+            {a.success ? <span style={{ color: '#52c41a' }}>✓</span> : <span style={{ color: '#ff4d4f' }}>({a.status_code || 'err'})</span>}
+            {i < attempts.length - 1 && <span style={{ color: '#999', margin: '0 2px' }}>→</span>}
+          </span>
+        ))}
+      </span>
+    )
   }
 
   const formatResetTime = (seconds: number): string => {
@@ -237,12 +264,13 @@ export default function AccessLogs() {
                   <th style={{ padding: '6px 8px' }}>Token 入/出</th>
                   <th style={{ padding: '6px 8px' }}>耗时(ms)</th>
                   <th style={{ padding: '6px 8px' }}>供应商</th>
+                  <th style={{ padding: '6px 8px' }}>故障转移</th>
                   <th style={{ padding: '6px 8px' }}>错误</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.length === 0 ? (
-                  <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: '#999' }}>暂无日志记录</td></tr>
+                  <tr><td colSpan={11} style={{ padding: 24, textAlign: 'center', color: '#999' }}>暂无日志记录</td></tr>
                 ) : (
                   logs.map(log => (
                     <tr key={log.id}
@@ -273,6 +301,7 @@ export default function AccessLogs() {
                       <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 12 }}>{log.tokens_in}/{log.tokens_out}</td>
                       <td style={{ padding: '6px 8px', fontFamily: 'monospace', fontSize: 12, textAlign: 'right' }}>{log.duration_ms}</td>
                       <td style={{ padding: '6px 8px', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.provider_name || '-'}</td>
+                      <td style={{ padding: '6px 8px', maxWidth: 200, overflow: 'hidden' }}>{renderFailoverMini(log.attempts_json)}</td>
                       <td style={{ padding: '6px 8px', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ff4d4f' }}>{log.error_msg || ''}</td>
                     </tr>
                   ))
@@ -362,6 +391,46 @@ export default function AccessLogs() {
                       </div>
                     </div>
                   )}
+
+                  {(() => {
+                    const attempts = parseAttempts(detailData.attempts_json)
+                    if (attempts.length === 0) return null
+                    const short = (n: string) => n.split('@')[0].slice(0, 14)
+                    return (
+                      <div style={{ marginBottom: 20 }}>
+                        <div style={{
+                          fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 8,
+                          borderBottom: '1px solid #f0f0f0', paddingBottom: 4,
+                        }}>故障转移链 ({attempts.length} 次尝试)</div>
+                        <div style={{ background: '#fafafa', borderRadius: 4, border: '1px solid #f0f0f0', overflow: 'hidden' }}>
+                          {attempts.map((a, i) => (
+                            <div key={i} style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '8px 12px',
+                              borderBottom: i < attempts.length - 1 ? '1px solid #f0f0f0' : 'none',
+                              background: a.success ? '#f6ffed' : '#fff2f0',
+                            }}>
+                              <span style={{
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                width: 20, height: 20, borderRadius: '50%',
+                                background: a.success ? '#52c41a' : '#ff4d4f', color: '#fff',
+                                fontSize: 11, fontWeight: 600, flexShrink: 0,
+                              }}>{a.attempt_num}</span>
+                              <span style={{ fontSize: 13, fontWeight: 500, minWidth: 120 }}>{short(a.provider)}</span>
+                              <span style={{
+                                display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontSize: 11,
+                                color: a.success ? '#52c41a' : '#ff4d4f',
+                                background: a.success ? '#f6ffed' : '#fff1f0',
+                                border: `1px solid ${a.success ? '#b7eb8f' : '#ffa39e'}`,
+                              }}>{a.success ? '成功' : a.status_code || 'err'}</span>
+                              <span style={{ color: '#999', fontSize: 12, fontFamily: 'monospace' }}>{a.duration_ms}ms</span>
+                              {a.error && <span style={{ color: '#ff4d4f', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.error}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
 
                   {(['client_req', 'client_resp', 'upstream_req', 'upstream_resp'] as const).map(section => {
                     const raw: string = detailData[section]

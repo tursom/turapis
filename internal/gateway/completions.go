@@ -46,11 +46,11 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if unified.Stream {
-		g.handleStreamCompletions(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), unified)
+		g.handleStreamCompletions(w, r.WithContext(ctxWithAttemptRecorder(models.WithRawBody(r.Context(), bodyBytes))), unified)
 		return
 	}
 
-	ctx := models.WithRawBody(r.Context(), bodyBytes)
+	ctx := ctxWithAttemptRecorder(models.WithRawBody(r.Context(), bodyBytes))
 	result, err := g.router.Route(ctx, unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/chat/completions", "error", err)
@@ -76,7 +76,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (g *Gateway) handleStreamCompletions(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	streamResult, err := g.router.RouteStream(r.Context(), unified)
+	streamResult, err := g.router.RouteStream(ctxWithAttemptRecorder(r.Context()), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/chat/completions", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {

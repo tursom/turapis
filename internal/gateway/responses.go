@@ -53,11 +53,11 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if unified.Stream {
-		g.handleStreamResponses(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), unified)
+		g.handleStreamResponses(w, r.WithContext(ctxWithAttemptRecorder(models.WithRawBody(r.Context(), bodyBytes))), unified)
 		return
 	}
 
-	ctx := models.WithRawBody(r.Context(), bodyBytes)
+	ctx := ctxWithAttemptRecorder(models.WithRawBody(r.Context(), bodyBytes))
 	result, err := g.router.Route(ctx, unified)
 	if err != nil {
 		slog.Error("route_failed", "path", "/v1/responses", "error", err)
@@ -98,7 +98,7 @@ type streamState struct {
 }
 
 func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, unified *models.UnifiedRequest) {
-	streamResult, err := g.router.RouteStream(r.Context(), unified)
+	streamResult, err := g.router.RouteStream(ctxWithAttemptRecorder(r.Context()), unified)
 	if err != nil {
 		slog.Error("stream_route_failed", "path", "/v1/responses", "error", err)
 		if c := collectorFromContext(r.Context()); c != nil {
@@ -424,7 +424,10 @@ func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request
 	if json.Unmarshal(bodyBytes, &probe) == nil && probe.Model != "" {
 		model = probe.Model
 	}
-	result, err := g.router.RouteRawStream(r.Context(), model, bodyBytes)
+
+	ctx := ctxWithAttemptRecorder(r.Context())
+
+	result, err := g.router.RouteRawStream(ctx, model, bodyBytes)
 	if err != nil {
 		slog.Error("raw_proxy_failed", "error", err)
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
