@@ -66,6 +66,7 @@ func (a *Admin) Routes() http.Handler {
 		// API Key 管理
 		r.Post("/api-keys", a.createAPIKey)
 		r.Get("/api-keys", a.listAPIKeys)
+		r.Put("/api-keys/{id}", a.updateAPIKey)
 		r.Delete("/api-keys/{id}", a.revokeAPIKey)
 
 		// 访问日志

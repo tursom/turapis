@@ -53,7 +53,7 @@ type RawStreamResult struct {
 
 // RouteRawStream 原始流式透传——选一个 JWT provider，返回原始 io.ReadCloser
 func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody []byte) (*RawStreamResult, error) {
-	chain, err := r.buildPriorityChain(modelName)
+	chain, err := r.buildPriorityChain(ctx, modelName)
 	if err != nil {
 		return nil, err
 	}

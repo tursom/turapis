@@ -46,15 +46,16 @@ type RouteResult struct {
 }
 
 // buildPriorityChain 构建优先级链
-func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, error) {
+func (r *Router) buildPriorityChain(ctx context.Context, modelName string) ([]provider.Provider, error) {
 	seen := map[string]bool{}
 	var providers []provider.Provider
+	perms := models.KeyPermissionsFromContext(ctx)
 
 	entries, err := r.store.GetPriorityChain(modelName)
 	if err == nil {
 		for _, e := range entries {
 			p, ok := r.registry.Get(e.Provider.Name)
-			if ok && !seen[p.Name()] {
+			if ok && !seen[p.Name()] && perms.ProviderAllowed(p.Name()) {
 				providers = append(providers, p)
 				seen[p.Name()] = true
 			}
@@ -66,7 +67,7 @@ func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, erro
 		if err == nil {
 			for _, e := range defaultEntries {
 				p, ok := r.registry.Get(e.Provider.Name)
-				if ok && !seen[p.Name()] {
+				if ok && !seen[p.Name()] && perms.ProviderAllowed(p.Name()) {
 					providers = append(providers, p)
 					seen[p.Name()] = true
 				}
@@ -78,7 +79,7 @@ func (r *Router) buildPriorityChain(modelName string) ([]provider.Provider, erro
 }
 
 func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest) (*RouteResult, error) {
-	chain, err := r.buildPriorityChain(req.Model)
+	chain, err := r.buildPriorityChain(ctx, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +145,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 
 // routeStream 流式路由（连接建立前重试，数据发送后不再重试）
 func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*StreamRouteResult, error) {
-	chain, err := r.buildPriorityChain(req.Model)
+	chain, err := r.buildPriorityChain(ctx, req.Model)
 	if err != nil {
 		return nil, err
 	}

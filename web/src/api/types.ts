@@ -59,11 +59,17 @@ export interface ModelMapping {
   created_at: string
 }
 
+export interface APIKeyPermissions {
+  allowed_models?: string[]
+  allowed_providers?: string[]
+}
+
 export interface APIKeyListItem {
   id: number
   key: string
   name: string
   enabled: boolean
+  permissions: string
   created_at: string
 }
 

@@ -41,11 +41,12 @@ func (a *Admin) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 	// 脱敏：key 字段只显示前 5 后 4 字符
 	type maskedKey struct {
-		ID        int    `json:"id"`
-		Key       string `json:"key"`
-		Name      string `json:"name"`
-		Enabled   bool   `json:"enabled"`
-		CreatedAt string `json:"created_at"`
+		ID          int    `json:"id"`
+		Key         string `json:"key"`
+		Name        string `json:"name"`
+		Enabled     bool   `json:"enabled"`
+		Permissions string `json:"permissions"`
+		CreatedAt   string `json:"created_at"`
 	}
 
 	masked := make([]maskedKey, len(keys))
@@ -55,11 +56,12 @@ func (a *Admin) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 			keyPreview = keyPreview[:5] + "****" + keyPreview[len(keyPreview)-4:]
 		}
 		masked[i] = maskedKey{
-			ID:        k.ID,
-			Key:       keyPreview,
-			Name:      k.Name,
-			Enabled:   k.Enabled,
-			CreatedAt: k.CreatedAt,
+			ID:          k.ID,
+			Key:         keyPreview,
+			Name:        k.Name,
+			Enabled:     k.Enabled,
+			Permissions: k.Permissions,
+			CreatedAt:   k.CreatedAt,
 		}
 	}
 
@@ -80,4 +82,50 @@ func (a *Admin) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// PUT /admin/api-keys/{id}
+func (a *Admin) updateAPIKey(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	var body struct {
+		Name        string `json:"name"`
+		Enabled     *bool  `json:"enabled"`
+		Permissions string `json:"permissions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+
+	key, err := a.store.GetAPIKey(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	name := key.Name
+	enabled := key.Enabled
+	permissions := key.Permissions
+
+	if body.Name != "" {
+		name = body.Name
+	}
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	if body.Permissions != "" {
+		permissions = body.Permissions
+	}
+
+	if err := a.store.UpdateAPIKey(id, name, enabled, permissions); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }

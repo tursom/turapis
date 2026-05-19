@@ -33,6 +33,7 @@ const (
 type LogStore struct {
 	db     *pebble.DB
 	nextID atomic.Uint64
+	total  atomic.Int64
 }
 
 // OpenLogStore opens (or creates) a Pebble database at path.
@@ -43,6 +44,7 @@ func OpenLogStore(path string) (*LogStore, error) {
 	}
 	s := &LogStore{db: db}
 	s.initCounter()
+	s.initTotal()
 	return s, nil
 }
 
@@ -54,6 +56,12 @@ func (s *LogStore) DB() *pebble.DB { return s.db }
 
 // NextID atomically returns the next monotonic log id.
 func (s *LogStore) NextID() uint64 { return s.nextID.Add(1) }
+
+// AddTotal adjusts the in-memory total count by delta.
+func (s *LogStore) AddTotal(delta int64) { s.total.Add(delta) }
+
+// Total returns the in-memory total entry count.
+func (s *LogStore) Total() int { return int(s.total.Load()) }
 
 // ── key encoding helpers (public for use by gateway writer) ──────
 
@@ -111,6 +119,10 @@ func (s *LogStore) initCounter() {
 	if iter.Last() {
 		s.nextID.Store(binary.BigEndian.Uint64(iter.Key()[1:9]))
 	}
+}
+
+func (s *LogStore) initTotal() {
+	s.total.Store(int64(s.countTimeKeys(primaryKeyMin, primaryKeyMax)))
 }
 
 // ── query bounds ───────────────────────────────────────────────────
@@ -181,7 +193,7 @@ func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 
 // queryLatest fetches the newest N entries without any filtering overhead.
 func (s *LogStore) queryLatest(q *AccessLogQuery) ([]AccessLog, int, error) {
-	total := s.countTimeKeys(primaryKeyMin, primaryKeyMax)
+	total := s.Total()
 
 	iter, _ := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: primaryKeyMin,
@@ -408,6 +420,7 @@ func (s *LogStore) Cleanup(retentionDays int) (int64, error) {
 	flush()
 
 	_ = s.db.Compact(context.Background(), start, end, true)
+	s.total.Add(-count)
 	return count, nil
 }
 
@@ -506,6 +519,7 @@ func (s *LogStore) MigrateFromSQLite(sqlDB *sqlx.DB) (int, error) {
 	}
 
 	_ = s.db.Delete(migrationCheckpointKey, pebble.Sync)
+	s.total.Add(int64(migrated))
 
 	if migrated > 0 {
 		slog.Info("access_logs_migrated", "from", "sqlite", "to", "pebble", "rows", migrated)

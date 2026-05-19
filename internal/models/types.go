@@ -51,7 +51,56 @@ const (
 	ctxKeyRawBody ctxKey = iota
 	ctxKeyCodexVersion
 	ctxKeyRawProxy
+	ctxKeyKeyPermissions
 )
+
+// KeyPermissions represents per-API-key access restrictions.
+type KeyPermissions struct {
+	AllowedModels    []string
+	AllowedProviders []string
+}
+
+// IsEmpty returns true if no restrictions are configured.
+func (p *KeyPermissions) IsEmpty() bool {
+	return p == nil || (len(p.AllowedModels) == 0 && len(p.AllowedProviders) == 0)
+}
+
+// ModelAllowed checks if the given model is permitted.
+func (p *KeyPermissions) ModelAllowed(model string) bool {
+	if p == nil || len(p.AllowedModels) == 0 {
+		return true
+	}
+	for _, m := range p.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// ProviderAllowed checks if the given provider is permitted.
+func (p *KeyPermissions) ProviderAllowed(provider string) bool {
+	if p == nil || len(p.AllowedProviders) == 0 {
+		return true
+	}
+	for _, pr := range p.AllowedProviders {
+		if pr == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func WithKeyPermissions(ctx context.Context, p *KeyPermissions) context.Context {
+	return context.WithValue(ctx, ctxKeyKeyPermissions, p)
+}
+
+func KeyPermissionsFromContext(ctx context.Context) *KeyPermissions {
+	if p, ok := ctx.Value(ctxKeyKeyPermissions).(*KeyPermissions); ok {
+		return p
+	}
+	return nil
+}
 
 func WithRawBody(ctx context.Context, body []byte) context.Context {
 	return context.WithValue(ctx, ctxKeyRawBody, body)

@@ -126,6 +126,13 @@ export function revokeAPIKey(id: number) {
   return request<{ status: string }>(`/admin/api-keys/${id}`, { method: 'DELETE' })
 }
 
+export function updateAPIKey(id: number, data: { name?: string; enabled?: boolean; permissions?: string }) {
+  return request<{ status: string }>(`/admin/api-keys/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+}
+
 // --- Sites ---
 export function fetchSites() {
   return request<Site[]>('/admin/sites')

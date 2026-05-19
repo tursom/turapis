@@ -125,9 +125,10 @@ func collectorFromContext(ctx context.Context) *AccessLogCollector {
 
 // accessLogWriter buffered channel + 后台单 goroutine 串行写入 Pebble（batch）
 type accessLogWriter struct {
-	logStore *config.LogStore
-	ch       chan config.AccessLog
-	wg       sync.WaitGroup
+	logStore   *config.LogStore
+	ch         chan config.AccessLog
+	wg         sync.WaitGroup
+	batchCount int64
 }
 
 func newAccessLogWriter(logStore *config.LogStore, bufSize int) *accessLogWriter {
@@ -156,6 +157,8 @@ func (w *accessLogWriter) run() {
 		}
 		batch.Close()
 		batch = nil
+		w.logStore.AddTotal(w.batchCount)
+		w.batchCount = 0
 	}
 
 	for {
@@ -189,6 +192,7 @@ func (w *accessLogWriter) run() {
 			if logEntry.Model != "" {
 				_ = batch.Set(config.EncodeModelIndexKey(logEntry.Model, tsNano, id), nil, nil)
 			}
+			w.batchCount++
 
 			if batch.Count() >= 50 {
 				flush()

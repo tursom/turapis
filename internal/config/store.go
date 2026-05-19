@@ -533,10 +533,62 @@ type APIKey struct {
 	Key         string  `db:"key" json:"key"`
 	Name        string  `db:"name" json:"name"`
 	Enabled     bool    `db:"enabled" json:"enabled"`
-	Permissions string  `db:"permissions" json:"-"`
+	Permissions string  `db:"permissions" json:"permissions"`
 	ExpiresAt   *string `db:"expires_at" json:"-"`
 	RateLimit   *int    `db:"rate_limit" json:"-"`
 	CreatedAt   string  `db:"created_at" json:"created_at"`
+}
+
+// APIKeyPermissions defines the parsed permissions JSON structure.
+type APIKeyPermissions struct {
+	AllowedModels   []string `json:"allowed_models,omitempty"`
+	AllowedProviders []string `json:"allowed_providers,omitempty"`
+}
+
+// ParsePermissions parses the permissions JSON string into APIKeyPermissions.
+func (k *APIKey) ParsePermissions() *APIKeyPermissions {
+	if k.Permissions == "" || k.Permissions == "{}" {
+		return nil
+	}
+	var p APIKeyPermissions
+	if err := json.Unmarshal([]byte(k.Permissions), &p); err != nil {
+		return nil
+	}
+	// Return nil if both lists are empty (equivalent to no restrictions)
+	if len(p.AllowedModels) == 0 && len(p.AllowedProviders) == 0 {
+		return nil
+	}
+	return &p
+}
+
+// IsModelAllowed checks if a model is permitted by this key's restrictions.
+// Returns true if there are no model restrictions or the model is in the allowlist.
+func (k *APIKey) IsModelAllowed(model string) bool {
+	p := k.ParsePermissions()
+	if p == nil || len(p.AllowedModels) == 0 {
+		return true
+	}
+	for _, m := range p.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// IsProviderAllowed checks if a provider is permitted by this key's restrictions.
+// Returns true if there are no provider restrictions or the provider is in the allowlist.
+func (k *APIKey) IsProviderAllowed(provider string) bool {
+	p := k.ParsePermissions()
+	if p == nil || len(p.AllowedProviders) == 0 {
+		return true
+	}
+	for _, pr := range p.AllowedProviders {
+		if pr == provider {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateAPIKey 创建 API Key
@@ -581,6 +633,35 @@ func (s *Store) RevokeAPIKey(id int) error {
 	_, err := s.DB.Exec("UPDATE api_keys SET enabled = 0 WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("revoke api key: %w", err)
+	}
+	return nil
+}
+
+// GetAPIKey 获取单个 API Key（不含脱敏）
+func (s *Store) GetAPIKey(id int) (*APIKey, error) {
+	var k APIKey
+	err := s.DB.Get(&k, "SELECT * FROM api_keys WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("api key %d not found", id)
+		}
+		return nil, fmt.Errorf("get api key: %w", err)
+	}
+	return &k, nil
+}
+
+// UpdateAPIKey 更新 API Key 的 name、enabled 和 permissions
+func (s *Store) UpdateAPIKey(id int, name string, enabled bool, permissions string) error {
+	result, err := s.DB.Exec(
+		"UPDATE api_keys SET name = ?, enabled = ?, permissions = ? WHERE id = ?",
+		name, enabled, permissions, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update api key: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("api key %d not found", id)
 	}
 	return nil
 }

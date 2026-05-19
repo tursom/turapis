@@ -70,6 +70,16 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 
 		w.Header().Set("X-Api-Key-Auth", "valid")
 		ctx := withApiKey(r.Context(), apiKey)
+
+		// 将 API Key 限制注入 context，供路由层检查
+		perms := apiKey.ParsePermissions()
+		if perms != nil {
+			ctx = models.WithKeyPermissions(ctx, &models.KeyPermissions{
+				AllowedModels:    perms.AllowedModels,
+				AllowedProviders: perms.AllowedProviders,
+			})
+		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -83,4 +93,17 @@ func extractBearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+// checkModelAllowed checks if the model is permitted by the API key in context.
+// Returns an HTTP status code and JSON error body if forbidden, or empty strings if allowed.
+func checkModelAllowed(ctx context.Context, model string) (int, string) {
+	if model == "" {
+		return 0, ""
+	}
+	perms := models.KeyPermissionsFromContext(ctx)
+	if perms == nil || perms.ModelAllowed(model) {
+		return 0, ""
+	}
+	return http.StatusForbidden, `{"error":{"message":"model ` + model + ` is not allowed for this API key","type":"forbidden"}}`
 }

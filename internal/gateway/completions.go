@@ -38,6 +38,13 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 	unified.OriginalPath = r.URL.Path
 
+	if code, body := checkModelAllowed(r.Context(), unified.Model); code != 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		w.Write([]byte(body))
+		return
+	}
+
 	if unified.Stream {
 		g.handleStreamCompletions(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), unified)
 		return
@@ -57,10 +64,6 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		c.SetModel(unified.Model)
 		c.SetProvider(result.UsedProvider)
 		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
-		c.SetQuota(result.QuotaBefore, result.QuotaAfter)
-		if b, err := json.Marshal(unified); err == nil {
-			c.SetUpstreamReq(string(b))
-		}
 		if b, err := json.Marshal(result.Response); err == nil {
 			c.SetUpstreamResp(string(b))
 		}
