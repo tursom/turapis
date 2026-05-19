@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -16,15 +17,16 @@ import (
 // ── binary key layout ──────────────────────────────────────────────
 //
 // Primary:  [0x01][ts_ns:uint64be 8B][counter:uint64be 8B] → JSON   (17 B)
-// Index:    [0x02][counter:uint64be 8B] → ts_ns:uint64be 8B          (9 B)
+// ID idx:   [0x02][counter:uint64be 8B] → ts_ns:uint64be 8B          (9 B)
+// Model idx:[0x03][model][0x00][ts_ns:uint64be 8B][counter:uint64be 8B] → ∅
 //
-// Pebble snappy-compresses values; binary keys are compact and sort
-// correctly under lexicographic comparison.
+// Model index enables prefix scanning without reading values.
 
 const (
-	pebblePrefixMeta    = 0x00
-	pebblePrefixPrimary = 0x01
-	pebblePrefixIndex   = 0x02
+	pebblePrefixMeta  = 0x00
+	pebblePrefixTime  = 0x01
+	pebblePrefixID    = 0x02
+	pebblePrefixModel = 0x03
 )
 
 // LogStore is a Pebble-backed access log storage engine.
@@ -58,7 +60,7 @@ func (s *LogStore) NextID() uint64 { return s.nextID.Add(1) }
 // EncodePrimaryKey builds the 17-byte primary key.
 func EncodePrimaryKey(tsNano uint64, counter uint64) []byte {
 	k := make([]byte, 17)
-	k[0] = pebblePrefixPrimary
+	k[0] = pebblePrefixTime
 	binary.BigEndian.PutUint64(k[1:9], tsNano)
 	binary.BigEndian.PutUint64(k[9:17], counter)
 	return k
@@ -67,8 +69,21 @@ func EncodePrimaryKey(tsNano uint64, counter uint64) []byte {
 // EncodeIndexKey builds the 9-byte id-lookup key.
 func EncodeIndexKey(counter uint64) []byte {
 	k := make([]byte, 9)
-	k[0] = pebblePrefixIndex
+	k[0] = pebblePrefixID
 	binary.BigEndian.PutUint64(k[1:9], counter)
+	return k
+}
+
+// EncodeModelIndexKey builds the model secondary-index key.
+// Format: [0x03][model][0x00][ts_ns:8B][counter:8B] — empty value.
+func EncodeModelIndexKey(model string, tsNano uint64, counter uint64) []byte {
+	n := len(model)
+	k := make([]byte, 1+n+1+8+8)
+	k[0] = pebblePrefixModel
+	copy(k[1:], model)
+	k[1+n] = 0x00
+	binary.BigEndian.PutUint64(k[1+n+1:], tsNano)
+	binary.BigEndian.PutUint64(k[1+n+9:], counter)
 	return k
 }
 
@@ -89,8 +104,8 @@ func decodePrimaryKey(k []byte) (tsNano, counter uint64) {
 
 func (s *LogStore) initCounter() {
 	iter, _ := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{pebblePrefixIndex, 0, 0, 0, 0, 0, 0, 0, 0},
-		UpperBound: []byte{pebblePrefixIndex + 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		LowerBound: []byte{pebblePrefixID, 0, 0, 0, 0, 0, 0, 0, 0},
+		UpperBound: []byte{pebblePrefixID + 1, 0, 0, 0, 0, 0, 0, 0, 0},
 	})
 	defer iter.Close()
 	if iter.Last() {
@@ -100,10 +115,10 @@ func (s *LogStore) initCounter() {
 
 // ── query bounds ───────────────────────────────────────────────────
 
-var primaryKeyMin = []byte{pebblePrefixPrimary,
+var primaryKeyMin = []byte{pebblePrefixTime,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
-var primaryKeyMax = []byte{pebblePrefixPrimary,
+var primaryKeyMax = []byte{pebblePrefixTime,
 	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
@@ -143,6 +158,8 @@ func (s *LogStore) Insert(log *AccessLog) error {
 }
 
 // Query returns paginated, filtered access logs (newest first).
+// Scanning is capped at maxScan matching entries to bound cost; the
+// returned total is exact up to that limit.
 func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 	if q.Page < 1 {
 		q.Page = 1
@@ -151,6 +168,49 @@ func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 		q.PerPage = 20
 	}
 
+	if q.Model != "" {
+		return s.queryByModel(&q)
+	}
+
+	noFilters := q.ApiKeyID == nil && q.Status == nil && q.StartAt == "" && q.EndAt == ""
+	if noFilters {
+		return s.queryLatest(&q)
+	}
+	return s.queryByTime(&q)
+}
+
+// queryLatest fetches the newest N entries without any filtering overhead.
+func (s *LogStore) queryLatest(q *AccessLogQuery) ([]AccessLog, int, error) {
+	iter, _ := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: primaryKeyMin,
+		UpperBound: primaryKeyMax,
+	})
+	defer iter.Close()
+
+	const maxScan = 10000
+	offset := (q.Page - 1) * q.PerPage
+	matches := make([]AccessLog, 0, q.PerPage)
+	scanned := 0
+
+	for iter.SeekLT(primaryKeyMax); iter.Valid() && scanned < maxScan; iter.Prev() {
+		var log AccessLog
+		if err := json.Unmarshal(iter.Value(), &log); err != nil {
+			continue
+		}
+		scanned++
+		if scanned > offset && len(matches) < q.PerPage {
+			matches = append(matches, log)
+		}
+		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
+			break
+		}
+	}
+	return matches, scanned, nil
+}
+
+// queryByTime iterates the primary time index. Every candidate must be
+// unmarshalled to check filters.
+func (s *LogStore) queryByTime(q *AccessLogQuery) ([]AccessLog, int, error) {
 	lowerBound, upperBound, err := s.queryBounds(q.StartAt, q.EndAt)
 	if err != nil {
 		return nil, 0, err
@@ -162,30 +222,99 @@ func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 	})
 	defer iter.Close()
 
-	var matches []AccessLog
-	total := 0
+	const maxScan = 10000
 	offset := (q.Page - 1) * q.PerPage
+	matches := make([]AccessLog, 0, q.PerPage)
+	scanned := 0
 
-	for iter.SeekLT(upperBound); iter.Valid(); iter.Prev() {
+	for iter.SeekLT(upperBound); iter.Valid() && scanned < maxScan; iter.Prev() {
 		var log AccessLog
 		if err := json.Unmarshal(iter.Value(), &log); err != nil {
 			continue
 		}
+		if !s.matchFilters(&log, q) {
+			continue
+		}
+		scanned++
+		if scanned > offset && len(matches) < q.PerPage {
+			matches = append(matches, log)
+		}
+		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
+			break
+		}
+	}
+	return matches, scanned, nil
+}
 
-		if !s.matchFilters(&log, &q) {
+// queryByModel uses the model secondary index — every key is already
+// model-filtered, so we only unmarshal to check remaining filters.
+func (s *LogStore) queryByModel(q *AccessLogQuery) ([]AccessLog, int, error) {
+	lowerBound, upperBound, err := s.modelBounds(q.Model, q.StartAt, q.EndAt)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	iter, _ := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+	})
+	defer iter.Close()
+
+	const maxScan = 10000
+	offset := (q.Page - 1) * q.PerPage
+	matches := make([]AccessLog, 0, q.PerPage)
+	scanned := 0
+
+	// When only model filter is active we can skip per-candidate
+	// unmarshaling — every key in the index already matches.
+	modelOnly := q.ApiKeyID == nil && q.Status == nil
+
+	for iter.SeekLT(upperBound); iter.Valid() && scanned < maxScan; iter.Prev() {
+		_, counter := decodeModelIndexKey(iter.Key())
+		tsNano := decodeModelIndexTimestamp(iter.Key())
+
+		if modelOnly {
+			scanned++
+			if scanned > offset && len(matches) < q.PerPage {
+				log, err := s.readPrimary(tsNano, counter)
+				if err != nil {
+					continue
+				}
+				matches = append(matches, *log)
+			}
 			continue
 		}
 
-		total++
-		if total > offset && len(matches) < q.PerPage {
-			matches = append(matches, log)
+		log, err := s.readPrimary(tsNano, counter)
+		if err != nil {
+			continue
+		}
+		if !s.matchFilters(log, q) {
+			continue
+		}
+		scanned++
+		if scanned > offset && len(matches) < q.PerPage {
+			matches = append(matches, *log)
+		}
+		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
+			break
 		}
 	}
+	return matches, scanned, nil
+}
 
-	if matches == nil {
-		matches = []AccessLog{}
+func (s *LogStore) readPrimary(tsNano, counter uint64) (*AccessLog, error) {
+	key := EncodePrimaryKey(tsNano, counter)
+	data, closer, err := s.db.Get(key)
+	if err != nil {
+		return nil, err
 	}
-	return matches, total, nil
+	defer closer.Close()
+	var log AccessLog
+	if err := json.Unmarshal(data, &log); err != nil {
+		return nil, err
+	}
+	return &log, nil
 }
 
 // Get returns a single access log by its numeric id.
@@ -327,6 +456,9 @@ func (s *LogStore) MigrateFromSQLite(sqlDB *sqlx.DB) (int, error) {
 
 		_ = b.Set(EncodePrimaryKey(tsNano, pebbleID), jsonData, nil)
 		_ = b.Set(EncodeIndexKey(pebbleID), EncodeTimestampValue(tsNano), nil)
+		if log.Model != "" {
+			_ = b.Set(EncodeModelIndexKey(log.Model, tsNano, pebbleID), nil, nil)
+		}
 
 		var ck [8]byte
 		binary.BigEndian.PutUint64(ck[:], uint64(sqliteID))
@@ -396,4 +528,57 @@ func (s *LogStore) matchFilters(log *AccessLog, q *AccessLogQuery) bool {
 		return false
 	}
 	return true
+}
+
+// ── model index bounds ─────────────────────────────────────────────
+
+func (s *LogStore) modelBounds(model, startAt, endAt string) (lower, upper []byte, err error) {
+	if startAt != "" {
+		ts, e := time.Parse(time.RFC3339, startAt)
+		if e != nil {
+			return nil, nil, fmt.Errorf("parse start_at: %w", e)
+		}
+		lower = EncodeModelIndexKey(model, uint64(ts.UnixNano()), 0)
+	} else {
+		lower = modelLowerBound(model)
+	}
+
+	if endAt != "" {
+		ts, e := time.Parse(time.RFC3339, endAt)
+		if e != nil {
+			return nil, nil, fmt.Errorf("parse end_at: %w", e)
+		}
+		upper = EncodeModelIndexKey(model, uint64(ts.UnixNano())+1, 0)
+	} else {
+		upper = modelUpperBound(model)
+	}
+	return
+}
+
+func modelLowerBound(model string) []byte {
+	k := make([]byte, 1+len(model)+1)
+	k[0] = pebblePrefixModel
+	copy(k[1:], model)
+	k[1+len(model)] = 0x00
+	return k
+}
+
+func modelUpperBound(model string) []byte {
+	k := make([]byte, 1+len(model)+1)
+	k[0] = pebblePrefixModel
+	copy(k[1:], model)
+	k[1+len(model)] = 0x01
+	return k
+}
+
+func decodeModelIndexKey(k []byte) (tsNano, counter uint64) {
+	nullPos := bytes.IndexByte(k, 0x00)
+	tsNano = binary.BigEndian.Uint64(k[nullPos+1:])
+	counter = binary.BigEndian.Uint64(k[nullPos+9:])
+	return
+}
+
+func decodeModelIndexTimestamp(k []byte) (tsNano uint64) {
+	nullPos := bytes.IndexByte(k, 0x00)
+	return binary.BigEndian.Uint64(k[nullPos+1:])
 }

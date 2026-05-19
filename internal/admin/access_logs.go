@@ -60,6 +60,12 @@ func (a *Admin) listAccessLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query access logs: "+err.Error())
 		return
 	}
+	for i := range logs {
+		logs[i].ClientReq = ""
+		logs[i].ClientResp = ""
+		logs[i].UpstreamReq = ""
+		logs[i].UpstreamResp = ""
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"logs":     logs,

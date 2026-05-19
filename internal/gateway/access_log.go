@@ -177,6 +177,9 @@ func (w *accessLogWriter) run() {
 
 			_ = batch.Set(config.EncodePrimaryKey(tsNano, id), jsonData, nil)
 			_ = batch.Set(config.EncodeIndexKey(id), config.EncodeTimestampValue(tsNano), nil)
+			if logEntry.Model != "" {
+				_ = batch.Set(config.EncodeModelIndexKey(logEntry.Model, tsNano, id), nil, nil)
+			}
 
 			if batch.Count() >= 50 {
 				flush()
