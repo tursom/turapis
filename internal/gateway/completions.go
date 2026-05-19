@@ -85,7 +85,6 @@ func (g *Gateway) handleStreamCompletions(w http.ResponseWriter, r *http.Request
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)
 	}
-	g.saveQuotaIfPresent(streamResult)
 	filtered := make(chan models.UnifiedStreamEvent, 8)
 	go func() {
 		defer close(filtered)

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
@@ -26,6 +27,7 @@ type OpenAIProvider struct {
 	supportedTools map[string]bool
 	searxngURL     string
 	nsMap          map[string]string
+	quotaMu        sync.RWMutex
 	lastQuota      map[string]interface{}
 }
 
@@ -39,9 +41,9 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	return &OpenAIProvider{
-		name:           name,
-		url:            strings.TrimSuffix(baseURL, "/"),
-		apiKey:         apiKey,
+		name:   name,
+		url:    strings.TrimSuffix(baseURL, "/"),
+		apiKey: apiKey,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   60 * time.Second,
@@ -50,7 +52,7 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 	}
 }
 
-func (p *OpenAIProvider) Name() string                 { return p.name }
+func (p *OpenAIProvider) Name() string                  { return p.name }
 func (p *OpenAIProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
 func (p *OpenAIProvider) SupportsTool(name string) bool {
 	if p.supportedTools == nil {
@@ -286,21 +288,21 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.U
 				emitEvent := false
 				event := models.UnifiedStreamEvent{Type: models.StreamEventDelta}
 
-			if c.Delta.Content != "" {
-				event.Content = c.Delta.Content
-				emitEvent = true
-			}
-			if len(c.Delta.ToolCalls) > 0 {
-				var streamTCs []streamToolCallDelta
-				if json.Unmarshal(c.Delta.ToolCalls, &streamTCs) == nil {
-					for _, tc := range streamTCs {
-						tcd := models.ToolCallDelta{Index: tc.Index, ID: tc.ID, Type: tc.Type}
-						if tc.Function != nil {
-							tcd.Function = &models.ToolCallFunctionDelta{
-								Name:      p.resolveToolName(tc.Function.Name),
-								Arguments: tc.Function.Arguments,
+				if c.Delta.Content != "" {
+					event.Content = c.Delta.Content
+					emitEvent = true
+				}
+				if len(c.Delta.ToolCalls) > 0 {
+					var streamTCs []streamToolCallDelta
+					if json.Unmarshal(c.Delta.ToolCalls, &streamTCs) == nil {
+						for _, tc := range streamTCs {
+							tcd := models.ToolCallDelta{Index: tc.Index, ID: tc.ID, Type: tc.Type}
+							if tc.Function != nil {
+								tcd.Function = &models.ToolCallFunctionDelta{
+									Name:      p.resolveToolName(tc.Function.Name),
+									Arguments: tc.Function.Arguments,
+								}
 							}
-						}
 							event.ToolCalls = append(event.ToolCalls, tcd)
 							emitEvent = true
 						}
@@ -392,6 +394,7 @@ func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, head
 }
 
 func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interface{}) (*http.Response, error) {
+	p.clearLastQuota()
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -415,7 +418,7 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 	if err != nil {
 		return nil, fmt.Errorf("post %s: ctx_err=%v err=%w", fullURL, ctx.Err(), err)
 	}
-	p.lastQuota = provider.ParseQuota(resp.Header)
+	p.setLastQuota(provider.ParseQuota(resp.Header))
 	return resp, nil
 }
 
@@ -496,10 +499,10 @@ type modelsListResponse struct {
 
 // streamToolCallDelta OpenAI 流式 tool_calls 中的单个 element
 type streamToolCallDelta struct {
-	Index    int                   `json:"index"`
-	ID       string                `json:"id,omitempty"`
-	Type     string                `json:"type,omitempty"`
-	Function *streamToolCallFunc   `json:"function,omitempty"`
+	Index    int                 `json:"index"`
+	ID       string              `json:"id,omitempty"`
+	Type     string              `json:"type,omitempty"`
+	Function *streamToolCallFunc `json:"function,omitempty"`
 }
 
 type streamToolCallFunc struct {
@@ -822,9 +825,9 @@ func extractWebSearchFromTools(tools json.RawMessage) json.RawMessage {
 	}
 	for _, item := range items {
 		var ws struct {
-			Type               string          `json:"type"`
-			SearchContextSize  string          `json:"search_context_size"`
-			UserLocation       json.RawMessage `json:"user_location"`
+			Type              string          `json:"type"`
+			SearchContextSize string          `json:"search_context_size"`
+			UserLocation      json.RawMessage `json:"user_location"`
 		}
 		if json.Unmarshal(item, &ws) != nil {
 			continue
@@ -911,7 +914,49 @@ func toUnifiedResponse(oaiResp *chatCompletionResponse) *models.UnifiedResponse 
 
 func (p *OpenAIProvider) isJWT() bool { return len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" }
 
-func (p *OpenAIProvider) LastQuota() map[string]interface{} { return p.lastQuota }
+func (p *OpenAIProvider) LastQuota() map[string]interface{} {
+	p.quotaMu.RLock()
+	defer p.quotaMu.RUnlock()
+	return cloneQuota(p.lastQuota)
+}
+
+func (p *OpenAIProvider) clearLastQuota() {
+	p.quotaMu.Lock()
+	defer p.quotaMu.Unlock()
+	p.lastQuota = nil
+}
+
+func (p *OpenAIProvider) setLastQuota(q map[string]interface{}) {
+	p.quotaMu.Lock()
+	defer p.quotaMu.Unlock()
+	p.lastQuota = cloneQuota(q)
+}
+
+func cloneQuota(q map[string]interface{}) map[string]interface{} {
+	if len(q) == 0 {
+		return nil
+	}
+	cloned := make(map[string]interface{}, len(q))
+	for k, v := range q {
+		cloned[k] = cloneQuotaValue(v)
+	}
+	return cloned
+}
+
+func cloneQuotaValue(v interface{}) interface{} {
+	switch typed := v.(type) {
+	case map[string]interface{}:
+		return cloneQuota(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneQuotaValue(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
 
 func codexVersion(ctx context.Context) string {
 	if v := models.CodexVersionFromContext(ctx); v != "" {
@@ -921,6 +966,7 @@ func codexVersion(ctx context.Context) string {
 }
 
 func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error) {
+	p.clearLastQuota()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
@@ -935,11 +981,12 @@ func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte)
 	if err != nil {
 		return nil, fmt.Errorf("raw responses stream: %w", err)
 	}
-	p.lastQuota = provider.ParseQuota(resp.Header)
+	p.setLastQuota(provider.ParseQuota(resp.Header))
 	return resp, nil
 }
 
 func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte) (<-chan models.UnifiedStreamEvent, error) {
+	p.clearLastQuota()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
@@ -954,7 +1001,7 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 	if err != nil {
 		return nil, fmt.Errorf("responses stream: %w", err)
 	}
-	p.lastQuota = provider.ParseQuota(resp.Header)
+	p.setLastQuota(provider.ParseQuota(resp.Header))
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
 		resp.Body.Close()
@@ -1044,8 +1091,8 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 					}
 				case currentEvent == "response.function_call_arguments.delta":
 					var fc struct {
-						CallID    string `json:"call_id"`
-						Delta     string `json:"delta"`
+						CallID string `json:"call_id"`
+						Delta  string `json:"delta"`
 					}
 					if json.Unmarshal([]byte(raw), &fc) == nil {
 						ch <- models.UnifiedStreamEvent{

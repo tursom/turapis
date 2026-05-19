@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Card, Button, Space, message, Alert, Input } from 'antd'
-import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { Card, Button, Space, message, Alert, Input, Tag } from 'antd'
+import { PlusOutlined, ReloadOutlined, SearchOutlined, ArrowLeftOutlined } from '@ant-design/icons'
 import {
   fetchModelMappings,
   createModelMapping,
@@ -22,6 +22,7 @@ export default function Routing() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingMapping, setEditingMapping] = useState<ModelMapping | null>(null)
   const [filterModel, setFilterModel] = useState('')
+  const [focusedModel, setFocusedModel] = useState<string | null>(null)
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
@@ -156,6 +157,50 @@ export default function Routing() {
     }
   }, [])
 
+  const handlePerModelChainChange = useCallback(async (modelName: string, newGroups: Provider[][]) => {
+    try {
+      const existingMappings = mappings.filter((m) => m.model_name === modelName)
+      const providerIdsInGroups = new Set(newGroups.flat().map((p) => p.id))
+
+      for (const m of existingMappings) {
+        if (!providerIdsInGroups.has(m.provider_id)) {
+          await deleteModelMapping(m.id)
+        }
+      }
+
+      for (let gi = 0; gi < newGroups.length; gi++) {
+        const group = newGroups[gi]
+        const basePriority = (gi + 1) * 10
+        for (let pi = 0; pi < group.length; pi++) {
+          const provider = group[pi]
+          const existing = existingMappings.find(
+            (m) => m.provider_id === provider.id,
+          )
+          const priority = basePriority + pi
+          if (existing) {
+            if (existing.priority !== priority) {
+              await updateModelMapping({ ...existing, priority })
+            }
+          } else {
+            await createModelMapping({
+              model_name: modelName,
+              provider_id: provider.id,
+              priority,
+              enabled: true,
+            })
+          }
+        }
+      }
+
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+      message.success(`${modelName} 故障转移链已更新`)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '更新模型链失败'
+      message.error(msg)
+    }
+  }, [mappings])
+
   const handleOpenCreateModal = useCallback(() => {
     setEditingMapping(null)
     setModalOpen(true)
@@ -168,6 +213,31 @@ export default function Routing() {
     : providers.length > 0
       ? [providers.sort((a, b) => a.priority - b.priority)]
       : []
+
+  const perModelGroups = useMemo(() => {
+    if (!focusedModel) return []
+    const modelMappings = mappings
+      .filter((m) => m.model_name === focusedModel && m.enabled)
+      .sort((a, b) => a.priority - b.priority)
+
+    const groups: Provider[][] = []
+    let currentGroup: Provider[] = []
+    let lastPriority = -1
+
+    for (const m of modelMappings) {
+      const provider = providers.find((p) => p.id === m.provider_id)
+      if (!provider) continue
+      const groupBucket = Math.floor(m.priority / 10)
+      if (groupBucket !== lastPriority && currentGroup.length > 0) {
+        groups.push(currentGroup)
+        currentGroup = []
+      }
+      currentGroup.push(provider)
+      lastPriority = groupBucket
+    }
+    if (currentGroup.length > 0) groups.push(currentGroup)
+    return groups
+  }, [focusedModel, mappings, providers])
 
   if (error && !loading) {
     return (
@@ -182,19 +252,35 @@ export default function Routing() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', minHeight: 0 }}>
       <Card
-        title="路由配置 - 可视化管道"
+        title={
+          focusedModel ? (
+            <Space>
+              <Button
+                type="text"
+                icon={<ArrowLeftOutlined />}
+                onClick={() => { setFocusedModel(null); setFilterModel('') }}
+              />
+              <span>路由配置</span>
+              <Tag color="blue">{focusedModel}</Tag>
+            </Space>
+          ) : (
+            '路由配置 - 可视化管道'
+          )
+        }
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
         extra={
           <Space wrap>
-            <Input
-              prefix={<SearchOutlined />}
-              placeholder="搜索模型..."
-              value={filterModel}
-              onChange={(e) => setFilterModel(e.target.value)}
-              allowClear
-              style={{ width: 180 }}
-            />
+            {!focusedModel && (
+              <Input
+                prefix={<SearchOutlined />}
+                placeholder="搜索模型..."
+                value={filterModel}
+                onChange={(e) => setFilterModel(e.target.value)}
+                allowClear
+                style={{ width: 180 }}
+              />
+            )}
             <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>
               刷新
             </Button>
@@ -209,15 +295,25 @@ export default function Routing() {
           mappings={mappings}
           loading={loading}
           filterModel={filterModel}
+          focusedModel={focusedModel}
+          onFocusModel={setFocusedModel}
           onCreateMapping={handleCreateMapping}
           onEditMapping={handleEditMapping}
           onDeleteMapping={handleDeleteMapping}
         />
-        <DefaultChainBar
-          providers={providers}
-          groups={chainGroupsForDisplay}
-          onGroupsChange={handleChainChange}
-        />
+        {focusedModel ? (
+          <DefaultChainBar
+            providers={providers}
+            groups={perModelGroups}
+            onGroupsChange={(newGroups) => handlePerModelChainChange(focusedModel, newGroups)}
+          />
+        ) : (
+          <DefaultChainBar
+            providers={providers}
+            groups={chainGroupsForDisplay}
+            onGroupsChange={handleChainChange}
+          />
+        )}
       </Card>
 
       <MappingModal

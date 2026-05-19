@@ -39,13 +39,13 @@ function ModelNode({ data, selected }: NodeProps) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <Badge count={providerCount} size="small" color={providerCount > 0 ? '#1677ff' : '#d9d9d9'} overflowCount={99} />
         <span style={{ fontSize: 12, color: '#8c8c8c' }}>
-          {providerCount === 0 ? '无供应商' : providerCount === 1 ? '1 个供应商' : `${providerCount} 个供应商`}
+          {providerCount === 0 ? 'No providers' : providerCount === 1 ? '1 provider' : `${providerCount} providers`}
         </span>
       </div>
       {providerNames.length > 0 && (
-        <Tooltip title={providerNames.join('、')} placement="right">
+        <Tooltip title={providerNames.join(', ')} placement="right">
           <div style={{ marginTop: 6, fontSize: 11, color: '#8c8c8c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {providerNames.join('、')}
+            {providerNames.join(', ')}
           </div>
         </Tooltip>
       )}

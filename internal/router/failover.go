@@ -91,6 +91,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 		start := time.Now()
 		resp, err := p.ChatCompletion(ctx, req)
 		duration := time.Since(start)
+		r.saveQuotaFromProvider(p)
 
 		if err == nil {
 			slog.Info("route_success",
@@ -135,10 +136,6 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	return nil, ferr
 }
 
-type quotaProvider interface {
-	LastQuota() map[string]interface{}
-}
-
 // routeStream 流式路由（连接建立前重试，数据发送后不再重试）
 func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*StreamRouteResult, error) {
 	chain, err := r.buildPriorityChain(req.Model)
@@ -155,6 +152,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 		start := time.Now()
 		events, err := p.ChatCompletionStream(ctx, req)
 		duration := time.Since(start)
+		r.saveQuotaFromProvider(p)
 		if err == nil {
 			if i > 0 {
 				slog.Info("stream_failover",
@@ -163,11 +161,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 					"attempt", i+1,
 				)
 			}
-			result := &StreamRouteResult{Events: events, ProviderName: p.Name()}
-			if qp, ok := p.(quotaProvider); ok {
-				result.Quota = qp.LastQuota()
-			}
-			return result, nil
+			return &StreamRouteResult{Events: events, ProviderName: p.Name()}, nil
 		}
 
 		cat := models.ClassifyError(err)

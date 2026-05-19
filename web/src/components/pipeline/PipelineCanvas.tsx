@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect } from 'react'
+import { useMemo, useCallback, useEffect, useState } from 'react'
 import {
   ReactFlow,
   Controls,
@@ -15,7 +15,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Spin, Empty, Button, Space, Typography } from 'antd'
-import { ClearOutlined } from '@ant-design/icons'
+import { ClearOutlined, SettingOutlined } from '@ant-design/icons'
 import type { Provider, ModelMapping } from '../../api/types'
 import type { ModelNodeData, ProviderNodeData, PriorityEdgeData } from './types'
 import ModelNode from './ModelNode'
@@ -36,16 +36,27 @@ interface PipelineCanvasProps {
   mappings: ModelMapping[]
   loading: boolean
   filterModel?: string
+  focusedModel?: string | null
+  onFocusModel?: (modelName: string | null) => void
   onCreateMapping: (modelName: string, providerId: number) => void
   onEditMapping: (mapping: ModelMapping) => void
   onDeleteMapping: (id: number) => void
 }
 
-function computeNodes(providers: Provider[], mappings: ModelMapping[], filterModel: string): Node[] {
+function computeNodes(
+  providers: Provider[],
+  mappings: ModelMapping[],
+  filterModel: string,
+  focusedModel: string | null | undefined,
+): Node[] {
   const nodes: Node[] = []
   const filter = filterModel.trim().toLowerCase()
 
-  const modelNames = [...new Set(mappings.map((m) => m.model_name))].sort()
+  let modelNames = [...new Set(mappings.map((m) => m.model_name))].sort()
+  if (focusedModel) {
+    modelNames = modelNames.filter((n) => n === focusedModel)
+  }
+
   const visibleModels = new Set<string>()
 
   modelNames.forEach((modelName, i) => {
@@ -78,11 +89,13 @@ function computeNodes(providers: Provider[], mappings: ModelMapping[], filterMod
     const connectedModels = [...new Set(
       mappings
         .filter((m) => m.provider_id === provider.id && m.enabled)
-        .map((m) => m.model_name)
+        .map((m) => m.model_name),
     )]
-    const visibleConnected = filter
-      ? connectedModels.filter((m) => visibleModels.has(m))
-      : connectedModels
+    const visibleConnected = focusedModel
+      ? connectedModels.filter((m) => m === focusedModel)
+      : filter
+        ? connectedModels.filter((m) => visibleModels.has(m))
+        : connectedModels
     const modelCount = visibleConnected.length
 
     const data: ProviderNodeData = {
@@ -96,7 +109,11 @@ function computeNodes(providers: Provider[], mappings: ModelMapping[], filterMod
       position: { x: PROVIDER_X, y: 60 + i * NODE_SPACING_Y },
       data,
       draggable: true,
-      hidden: filter ? modelCount === 0 : false,
+      hidden: focusedModel
+        ? modelCount === 0
+        : filter
+          ? modelCount === 0
+          : false,
     })
   })
 
@@ -142,19 +159,26 @@ export default function PipelineCanvas({
   mappings,
   loading,
   filterModel = '',
+  focusedModel,
+  onFocusModel,
   onCreateMapping,
   onEditMapping,
   onDeleteMapping,
 }: PipelineCanvasProps) {
-  const initialNodes = useMemo(() => computeNodes(providers, mappings, filterModel), [providers, mappings, filterModel])
+  const [contextMenu, setContextMenu] = useState<{ modelName: string; x: number; y: number } | null>(null)
+
+  const initialNodes = useMemo(
+    () => computeNodes(providers, mappings, filterModel, focusedModel),
+    [providers, mappings, filterModel, focusedModel],
+  )
   const initialEdges = useMemo(() => computeEdges(mappings, onEditMapping), [mappings, onEditMapping])
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useEffect(() => {
-    setNodes(computeNodes(providers, mappings, filterModel))
-  }, [providers, mappings, filterModel, setNodes])
+    setNodes(computeNodes(providers, mappings, filterModel, focusedModel))
+  }, [providers, mappings, filterModel, focusedModel, setNodes])
 
   useEffect(() => {
     setEdges(computeEdges(mappings, onEditMapping))
@@ -254,6 +278,14 @@ export default function PipelineCanvas({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={onEdgeClick}
+        onNodeContextMenu={(event, node) => {
+          event.preventDefault()
+          if (node.type === 'model') {
+            const d = node.data as ModelNodeData
+            setContextMenu({ modelName: d.modelName, x: event.clientX, y: event.clientY })
+          }
+        }}
+        onPaneClick={() => setContextMenu(null)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
@@ -297,6 +329,45 @@ export default function PipelineCanvas({
           </defs>
         </svg>
       </ReactFlow>
+      {contextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            zIndex: 1000,
+            background: '#fff',
+            border: '1px solid #d9d9d9',
+            borderRadius: 8,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+            padding: 4,
+            minWidth: 160,
+          }}
+          onClick={() => setContextMenu(null)}
+        >
+          <div
+            style={{
+              padding: '8px 12px',
+              cursor: 'pointer',
+              borderRadius: 6,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 13,
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              setContextMenu(null)
+              onFocusModel?.(contextMenu.modelName)
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f5ff' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+          >
+            <SettingOutlined style={{ color: '#1677ff' }} />
+            单独配置
+          </div>
+        </div>
+      )}
     </div>
   )
 }

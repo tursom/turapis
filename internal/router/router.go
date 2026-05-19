@@ -34,7 +34,6 @@ func (r *Router) Route(ctx context.Context, req *models.UnifiedRequest) (*RouteR
 type StreamRouteResult struct {
 	Events       <-chan models.UnifiedStreamEvent
 	ProviderName string
-	Quota        map[string]interface{}
 }
 
 // RouteStream 执行流式故障转移路由
@@ -57,6 +56,7 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 			if err != nil {
 				continue
 			}
+			r.saveQuotaFromHeaders(p.Name(), resp.Header)
 			if resp.StatusCode != 200 {
 				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
 				resp.Body.Close()

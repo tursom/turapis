@@ -1,11 +1,20 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/tursom/turapis/internal/models"
 )
+
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("transport failed")
+}
 
 func TestNormalizeRole_Developer(t *testing.T) {
 	if got := normalizeRole("developer"); got != "system" {
@@ -330,5 +339,48 @@ func TestFlattenNamespaceContainers_Mixed(t *testing.T) {
 	json.Unmarshal(flat[0], &t1)
 	if t1.Name != "mcp__srv__tool1" {
 		t.Errorf("expected mcp__srv__tool1, got %s", t1.Name)
+	}
+}
+
+func TestLastQuotaReturnsCopy(t *testing.T) {
+	p := &OpenAIProvider{}
+	p.setLastQuota(map[string]interface{}{
+		"primary": map[string]interface{}{
+			"used_percent": 1.0,
+		},
+	})
+
+	q := p.LastQuota()
+	q["secondary"] = map[string]interface{}{"used_percent": 99.0}
+	q["primary"].(map[string]interface{})["used_percent"] = 42.0
+
+	got := p.LastQuota()
+	if _, ok := got["secondary"]; ok {
+		t.Fatalf("LastQuota returned writable top-level state: %#v", got)
+	}
+	primary := got["primary"].(map[string]interface{})
+	if primary["used_percent"] != 1.0 {
+		t.Fatalf("LastQuota returned writable nested state: %#v", got)
+	}
+}
+
+func TestDoRequestClearsStaleQuotaOnTransportError(t *testing.T) {
+	p := &OpenAIProvider{
+		url:    "https://example.test",
+		apiKey: "sk-test",
+		client: &http.Client{Transport: failingRoundTripper{}},
+	}
+	p.setLastQuota(map[string]interface{}{
+		"primary": map[string]interface{}{
+			"used_percent": 87.0,
+		},
+	})
+
+	_, err := p.doRequest(context.Background(), "/chat/completions", map[string]string{"model": "gpt-test"})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if got := p.LastQuota(); got != nil {
+		t.Fatalf("expected stale quota to be cleared, got %#v", got)
 	}
 }

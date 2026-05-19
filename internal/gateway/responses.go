@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
-	"github.com/tursom/turapis/internal/router"
 	"github.com/tursom/turapis/internal/translate"
 )
 
@@ -108,8 +107,6 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		c.SetProvider(streamResult.ProviderName)
 	}
 
-	g.saveQuotaIfPresent(streamResult)
-
 	state := &streamState{
 		model:     unified.Model,
 		msgItemID: "msg_turapis_" + fmt.Sprint(time.Now().UnixNano()),
@@ -180,8 +177,8 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 					"delta":         event.Content,
 				})
 			}
-		for _, tc := range event.ToolCalls {
-			if tc.ID != "" && tc.Function != nil {
+			for _, tc := range event.ToolCalls {
+				if tc.ID != "" && tc.Function != nil {
 					isNew := state.activeCallID != tc.ID
 					if isNew {
 						state.activeCallID = tc.ID
@@ -226,16 +223,16 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 					"arguments":    state.argBuf,
 				})
 				item := map[string]interface{}{
-						"type":      "function_call",
-						"id":        state.activeCallID,
-						"name":      state.activeCallName,
-						"arguments": state.argBuf,
-						"status":    "completed",
-					}
-					if state.activeCallNS != "" {
-						item["namespace"] = state.activeCallNS
-					}
-			writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
+					"type":      "function_call",
+					"id":        state.activeCallID,
+					"name":      state.activeCallName,
+					"arguments": state.argBuf,
+					"status":    "completed",
+				}
+				if state.activeCallNS != "" {
+					item["namespace"] = state.activeCallNS
+				}
+				writeResponsesEvent(w, flusher, "response.output_item.done", map[string]interface{}{
 					"output_index": state.outputIdx,
 					"item": map[string]interface{}{
 						"type":      "function_call",
@@ -367,8 +364,8 @@ func mustMarshal(v interface{}) string {
 
 func buildCompleted(state *streamState, respID string) map[string]interface{} {
 	resp := map[string]interface{}{
-		"id":     respID,
-		"model":  state.model,
+		"id":    respID,
+		"model": state.model,
 		"usage": map[string]interface{}{
 			"input_tokens":  state.inTok,
 			"output_tokens": state.outTok,
@@ -411,23 +408,6 @@ func splitNamespaceName(fullName string) (name, ns string) {
 		return fullName[2:], ""
 	}
 	return fullName[:idx], fullName[idx+2:]
-}
-
-func (g *Gateway) saveQuotaIfPresent(result *router.StreamRouteResult) {
-	if result == nil || len(result.Quota) == 0 {
-		return
-	}
-	p, err := g.store.GetProviderByName(result.ProviderName)
-	if err != nil || p == nil {
-		return
-	}
-	qj, err := json.Marshal(result.Quota)
-	if err != nil {
-		return
-	}
-	if err := g.store.SaveProviderQuota(p.ID, qj); err != nil {
-		slog.Warn("save_stream_quota_failed", "provider", result.ProviderName, "error", err)
-	}
 }
 
 func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {

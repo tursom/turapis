@@ -1,9 +1,13 @@
 import { useState, useCallback, useRef } from 'react'
 import { Tag, Button, Tooltip, Typography, Popconfirm, Select } from 'antd'
-import { HolderOutlined, WarningOutlined, PlusOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { HolderOutlined, WarningOutlined, PlusOutlined, ThunderboltOutlined, MenuOutlined } from '@ant-design/icons'
 import type { Provider } from '../../api/types'
 
 const { Text } = Typography
+
+type DragPayload =
+  | { type: 'provider'; providerId: number; fromGroupIdx: number; fromProviderIdx: number }
+  | { type: 'group'; fromGroupIdx: number }
 
 interface DefaultChainBarProps {
   providers: Provider[]
@@ -12,7 +16,7 @@ interface DefaultChainBarProps {
 }
 
 export default function DefaultChainBar({ providers, groups, onGroupsChange }: DefaultChainBarProps) {
-  const [dragInfo, setDragInfo] = useState<{ providerId: number; fromGroupIdx: number; fromProviderIdx: number } | null>(null)
+  const [dragInfo, setDragInfo] = useState<DragPayload | null>(null)
   const [addingProvider, setAddingProvider] = useState(false)
   const [dropTargetGroup, setDropTargetGroup] = useState<number | null>(null)
   const addBtnRef = useRef<HTMLDivElement>(null)
@@ -21,8 +25,12 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
     (p) => !groups.some((g) => g.some((gp) => gp.id === p.id)),
   )
 
-  const handleDragStart = (providerId: number, fromGroupIdx: number, fromProviderIdx: number) => {
-    setDragInfo({ providerId, fromGroupIdx, fromProviderIdx })
+  const handleProviderDragStart = (providerId: number, fromGroupIdx: number, fromProviderIdx: number) => {
+    setDragInfo({ type: 'provider', providerId, fromGroupIdx, fromProviderIdx })
+  }
+
+  const handleGroupDragStart = (fromGroupIdx: number) => {
+    setDragInfo({ type: 'group', fromGroupIdx })
   }
 
   const handleDragOverGroup = (e: React.DragEvent, groupIdx: number) => {
@@ -31,7 +39,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
     setDropTargetGroup(groupIdx)
   }
 
-  const handleDragLeaveGroup = () => {
+  const handleDragLeave = () => {
     setDropTargetGroup(null)
   }
 
@@ -39,29 +47,46 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
     setDropTargetGroup(null)
     if (!dragInfo) return
 
-    const { fromGroupIdx, fromProviderIdx } = dragInfo
-    if (fromGroupIdx === targetGroupIdx) {
-      setDragInfo(null)
-      return
+    if (dragInfo.type === 'provider') {
+      const { fromGroupIdx, fromProviderIdx } = dragInfo
+      if (fromGroupIdx === targetGroupIdx) {
+        setDragInfo(null)
+        return
+      }
+
+      const newGroups = groups.map((g) => [...g])
+      const [moved] = newGroups[fromGroupIdx].splice(fromProviderIdx, 1)
+
+      if (newGroups[fromGroupIdx].length === 0) {
+        newGroups.splice(fromGroupIdx, 1)
+        const actualTarget = targetGroupIdx > fromGroupIdx ? targetGroupIdx - 1 : targetGroupIdx
+        newGroups[actualTarget].push(moved)
+      } else {
+        newGroups[targetGroupIdx].push(moved)
+      }
+
+      onGroupsChange(newGroups)
+    } else if (dragInfo.type === 'group') {
+      const { fromGroupIdx } = dragInfo
+      if (fromGroupIdx === targetGroupIdx) {
+        setDragInfo(null)
+        return
+      }
+
+      const newGroups = [...groups]
+      const [moved] = newGroups.splice(fromGroupIdx, 1)
+      newGroups.splice(targetGroupIdx, 0, moved)
+      onGroupsChange(newGroups)
     }
 
-    const newGroups = groups.map((g) => [...g])
-    const [moved] = newGroups[fromGroupIdx].splice(fromProviderIdx, 1)
-
-    if (newGroups[fromGroupIdx].length === 0) {
-      newGroups.splice(fromGroupIdx, 1)
-      const actualTarget = targetGroupIdx > fromGroupIdx ? targetGroupIdx - 1 : targetGroupIdx
-      newGroups[actualTarget].push(moved)
-    } else {
-      newGroups[targetGroupIdx].push(moved)
-    }
-
-    onGroupsChange(newGroups)
     setDragInfo(null)
   }
 
   const handleDropOnNewGroup = () => {
-    if (!dragInfo) return
+    if (!dragInfo || dragInfo.type !== 'provider') {
+      setDragInfo(null)
+      return
+    }
 
     const { fromGroupIdx, fromProviderIdx } = dragInfo
     const newGroups = groups.map((g) => [...g])
@@ -108,14 +133,14 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <WarningOutlined style={{ color: '#faad14' }} />
-          <Text type="secondary">尚未配置故障转移链。未匹配专属映射的请求将直接返回错误。</Text>
+          <Text type="secondary">Chain not configured. Requests without model-specific mappings will fail.</Text>
         </div>
         {addingProvider ? (
           <Select
             autoFocus
             size="small"
             style={{ minWidth: 200 }}
-            placeholder="选择供应商..."
+            placeholder="Select provider..."
             options={availableProviders.map((p) => ({ value: p.id, label: p.name }))}
             onChange={(val) => handleAddProvider(val as number)}
             onBlur={() => setAddingProvider(false)}
@@ -128,7 +153,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
             onClick={() => setAddingProvider(true)}
             disabled={availableProviders.length === 0}
           >
-            添加供应商到链
+            Add to chain
           </Button>
         )}
       </div>
@@ -138,20 +163,14 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
   return (
     <div
       style={{ marginTop: 12, flexShrink: 0 }}
-      onDragOver={(e) => {
-        e.preventDefault()
-        e.dataTransfer.dropEffect = 'move'
-      }}
-      onDrop={(e) => {
-        e.preventDefault()
-        handleDropOnNewGroup()
-      }}
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+      onDrop={(e) => { e.preventDefault(); handleDropOnNewGroup() }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <ThunderboltOutlined style={{ color: '#1677ff' }} />
-        <Text strong style={{ fontSize: 13 }}>故障转移优先级配置</Text>
+        <Text strong style={{ fontSize: 13 }}>Failover priority</Text>
         <Text type="secondary" style={{ fontSize: 11 }}>
-          同组共享优先级（并行），箭头方向依次故障转移
+          Same group = same priority (parallel), arrows = sequential failover. Drag groups or individual providers.
         </Text>
       </div>
 
@@ -172,7 +191,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
           <div key={groupIdx} style={{ display: 'flex', alignItems: 'center' }}>
             <div
               onDragOver={(e) => handleDragOverGroup(e, groupIdx)}
-              onDragLeave={handleDragLeaveGroup}
+              onDragLeave={handleDragLeave}
               onDrop={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -187,42 +206,54 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
                 border: `2px dashed ${dropTargetGroup === groupIdx ? '#1677ff' : '#d9d9d9'}`,
                 borderRadius: 10,
                 minWidth: 120,
+                opacity: dragInfo?.type === 'group' && dragInfo.fromGroupIdx === groupIdx ? 0.4 : 1,
                 transition: 'all 0.2s',
               }}
             >
-              <Tag
-                color="blue"
-                style={{
-                  alignSelf: 'flex-start',
-                  margin: 0,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  padding: '0 6px',
-                }}
-              >
-                P{groupIdx + 1}
-              </Tag>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <MenuOutlined
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.stopPropagation()
+                    handleGroupDragStart(groupIdx)
+                  }}
+                  onDragEnd={handleDragEnd}
+                  style={{ color: '#bfbfbf', fontSize: 14, cursor: 'grab', flexShrink: 0, padding: 2 }}
+                />
+                <Tag
+                  color="blue"
+                  style={{
+                    margin: 0,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '0 6px',
+                  }}
+                >
+                  P{groupIdx + 1}
+                </Tag>
+              </div>
               {group.map((provider, providerIdx) => (
-                <Tooltip key={provider.id} title="拖拽到其他组可合并，拖到空白处可拆分">
+                <Tooltip key={provider.id} title="Drag to another group to merge, drag to empty space to split">
                   <div
                     draggable
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = 'move'
                       e.stopPropagation()
-                      handleDragStart(provider.id, groupIdx, providerIdx)
+                      handleProviderDragStart(provider.id, groupIdx, providerIdx)
                     }}
                     onDragEnd={handleDragEnd}
                     style={{
                       padding: '4px 10px',
-                      background: dragInfo?.providerId === provider.id ? '#e6f4ff' : '#fff',
-                      border: `1px solid ${dragInfo?.providerId === provider.id ? '#1677ff' : provider.enabled ? '#b7eb8f' : '#d9d9d9'}`,
+                      background: dragInfo?.type === 'provider' && (dragInfo as any).providerId === provider.id ? '#e6f4ff' : '#fff',
+                      border: `1px solid ${dragInfo?.type === 'provider' && (dragInfo as any).providerId === provider.id ? '#1677ff' : provider.enabled ? '#b7eb8f' : '#d9d9d9'}`,
                       borderRadius: 6,
                       cursor: 'grab',
                       display: 'flex',
                       alignItems: 'center',
                       gap: 6,
                       userSelect: 'none',
-                      opacity: dragInfo?.providerId === provider.id ? 0.5 : 1,
+                      opacity: dragInfo?.type === 'provider' && (dragInfo as any).providerId === provider.id ? 0.5 : 1,
                       transition: 'all 0.15s',
                     }}
                   >
@@ -239,20 +270,20 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
                     </Tag>
                     {!provider.enabled && (
                       <Tag color="default" style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px' }}>
-                        禁用
+                        off
                       </Tag>
                     )}
                     <Popconfirm
-                      title="从链中移除？"
+                      title="Remove from chain?"
                       onConfirm={() => handleRemoveProvider(groupIdx, providerIdx)}
-                      okText="移除"
-                      cancelText="取消"
+                      okText="Remove"
+                      cancelText="Cancel"
                     >
                       <span
                         style={{ fontSize: 14, color: '#bfbfbf', cursor: 'pointer', lineHeight: 1 }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        ×
+                        x
                       </span>
                     </Popconfirm>
                   </div>
@@ -279,7 +310,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
               autoFocus
               size="small"
               style={{ minWidth: 160 }}
-              placeholder="添加供应商..."
+              placeholder="Add provider..."
               options={availableProviders.map((p) => ({ value: p.id, label: p.name }))}
               onChange={(val) => handleAddProvider(val as number)}
               onBlur={() => setAddingProvider(false)}
@@ -292,7 +323,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
               onClick={() => setAddingProvider(true)}
               disabled={availableProviders.length === 0}
             >
-              添加供应商
+              Add
             </Button>
           )}
         </div>
