@@ -34,6 +34,8 @@ func (r *Router) Route(ctx context.Context, req *models.UnifiedRequest) (*RouteR
 type StreamRouteResult struct {
 	Events       <-chan models.UnifiedStreamEvent
 	ProviderName string
+	QuotaBefore  string
+	QuotaAfter   string
 }
 
 // RouteStream 执行流式故障转移路由
@@ -41,31 +43,46 @@ func (r *Router) RouteStream(ctx context.Context, req *models.UnifiedRequest) (*
 	return r.routeStream(ctx, req)
 }
 
+// RawStreamResult 原始流式路由结果
+type RawStreamResult struct {
+	Body         io.ReadCloser
+	ProviderName string
+	QuotaBefore  string
+	QuotaAfter   string
+}
+
 // RouteRawStream 原始流式透传——选一个 JWT provider，返回原始 io.ReadCloser
-func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody []byte) (io.ReadCloser, string, error) {
+func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody []byte) (*RawStreamResult, error) {
 	chain, err := r.buildPriorityChain(modelName)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	for _, p := range chain {
 		type rawStreamer interface {
 			RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error)
 		}
 		if rs, ok := p.(rawStreamer); ok {
+			quotaBefore := r.getProviderQuotaJSON(p.Name())
 			resp, err := rs.RawResponsesStream(ctx, rawBody)
 			if err != nil {
 				continue
 			}
 			r.saveQuotaFromHeaders(p.Name(), resp.Header)
+			quotaAfter := r.getProviderQuotaJSON(p.Name())
 			if resp.StatusCode != 200 {
 				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
 				resp.Body.Close()
 				continue
 			}
-			return resp.Body, p.Name(), nil
+			return &RawStreamResult{
+				Body:         resp.Body,
+				ProviderName: p.Name(),
+				QuotaBefore:  quotaBefore,
+				QuotaAfter:   quotaAfter,
+			}, nil
 		}
 	}
-	return nil, "", fmt.Errorf("no raw stream provider available")
+	return nil, fmt.Errorf("no raw stream provider available")
 }
 
 // routeStreamToResult 流式路由的兼容包装（当 caller 以非流式方式调用流式请求时）

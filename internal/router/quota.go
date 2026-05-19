@@ -5,11 +5,24 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/provider"
 )
 
 type quotaProvider interface {
 	LastQuota() map[string]interface{}
+}
+
+func (r *Router) getProviderQuotaJSON(providerName string) string {
+	p, err := r.store.GetProviderByName(providerName)
+	if err != nil || p == nil {
+		return ""
+	}
+	q := config.ParseProviderQuota(p.APIKey)
+	if q == nil {
+		return ""
+	}
+	return string(*q)
 }
 
 func (r *Router) saveQuotaFromProvider(p provider.Provider) {

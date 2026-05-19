@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,6 +64,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		c.SetModel(unified.Model)
 		c.SetProvider(result.UsedProvider)
 		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
+		c.SetQuota(result.QuotaBefore, result.QuotaAfter)
 		if b, err := json.Marshal(unified); err == nil {
 			c.SetUpstreamReq(string(b))
 		}
@@ -105,6 +107,7 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 	if c := collectorFromContext(r.Context()); c != nil {
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)
+		c.SetQuota(streamResult.QuotaBefore, streamResult.QuotaAfter)
 	}
 
 	state := &streamState{
@@ -418,19 +421,159 @@ func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request
 	if json.Unmarshal(bodyBytes, &probe) == nil && probe.Model != "" {
 		model = probe.Model
 	}
-	body, providerName, err := g.router.RouteRawStream(r.Context(), model, bodyBytes)
+	result, err := g.router.RouteRawStream(r.Context(), model, bodyBytes)
 	if err != nil {
 		slog.Error("raw_proxy_failed", "error", err)
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
 	}
-	defer body.Close()
+	defer result.Body.Close()
 	if c := collectorFromContext(r.Context()); c != nil {
 		c.SetModel(model)
-		c.SetProvider(providerName)
+		c.SetProvider(result.ProviderName)
+		c.SetUpstreamReq(string(bodyBytes))
+		c.SetQuota(result.QuotaBefore, result.QuotaAfter)
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	io.Copy(w, body)
+	var flusher http.Flusher
+	if f, ok := w.(http.Flusher); ok {
+		flusher = f
+	}
+	if err := copyRawResponsesProxy(w, flusher, result.Body, collectorFromContext(r.Context())); err != nil {
+		slog.Warn("raw_proxy_copy_failed", "provider", result.ProviderName, "error", err)
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+		}
+	}
+}
+
+func copyRawResponsesProxy(w io.Writer, flusher http.Flusher, body io.Reader, collector *AccessLogCollector) error {
+	parser := rawResponsesUsageParser{collector: collector}
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			parser.Write(chunk)
+			if _, err := w.Write(chunk); err != nil {
+				parser.Close()
+				return err
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			parser.Close()
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
+type rawResponsesUsageParser struct {
+	collector *AccessLogCollector
+	line      []byte
+	event     string
+	dataLines []string
+}
+
+func (p *rawResponsesUsageParser) Write(chunk []byte) {
+	if p.collector == nil || len(chunk) == 0 {
+		return
+	}
+	for len(chunk) > 0 {
+		idx := bytes.IndexByte(chunk, '\n')
+		if idx < 0 {
+			p.line = append(p.line, chunk...)
+			return
+		}
+		p.line = append(p.line, chunk[:idx]...)
+		p.processLine(p.line)
+		p.line = p.line[:0]
+		chunk = chunk[idx+1:]
+	}
+}
+
+func (p *rawResponsesUsageParser) Close() {
+	if p.collector == nil {
+		return
+	}
+	if len(p.line) > 0 {
+		p.processLine(p.line)
+		p.line = nil
+	}
+	p.dispatch()
+}
+
+func (p *rawResponsesUsageParser) processLine(raw []byte) {
+	line := strings.TrimSuffix(string(raw), "\r")
+	if line == "" {
+		p.dispatch()
+		return
+	}
+	if strings.HasPrefix(line, "event:") {
+		p.event = trimSSEFieldValue(strings.TrimPrefix(line, "event:"))
+		return
+	}
+	if strings.HasPrefix(line, "data:") {
+		p.dataLines = append(p.dataLines, trimSSEFieldValue(strings.TrimPrefix(line, "data:")))
+	}
+}
+
+func (p *rawResponsesUsageParser) dispatch() {
+	if len(p.dataLines) == 0 {
+		p.event = ""
+		return
+	}
+	data := strings.Join(p.dataLines, "\n")
+	p.captureUsage(p.event, data)
+	p.event = ""
+	p.dataLines = nil
+}
+
+func (p *rawResponsesUsageParser) captureUsage(event, data string) {
+	if data == "" || data == "[DONE]" {
+		return
+	}
+	if event != "" && event != "response.completed" {
+		return
+	}
+	if event == "" && !strings.Contains(data, `"response.completed"`) {
+		return
+	}
+	var payload struct {
+		Type     string `json:"type"`
+		Response struct {
+			Model string `json:"model"`
+			Usage *struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage,omitempty"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return
+	}
+	if payload.Type != "" && payload.Type != "response.completed" && event != "response.completed" {
+		return
+	}
+	if payload.Response.Usage == nil {
+		return
+	}
+	if payload.Response.Model != "" {
+		p.collector.SetModel(payload.Response.Model)
+	}
+	p.collector.SetTokens(payload.Response.Usage.InputTokens, payload.Response.Usage.OutputTokens)
+}
+
+func trimSSEFieldValue(v string) string {
+	if strings.HasPrefix(v, " ") {
+		return v[1:]
+	}
+	return v
 }

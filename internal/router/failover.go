@@ -41,6 +41,8 @@ type RouteResult struct {
 	Response     *models.UnifiedResponse
 	UsedProvider string
 	Attempts     []AttemptInfo
+	QuotaBefore  string
+	QuotaAfter   string
 }
 
 // buildPriorityChain 构建优先级链
@@ -89,9 +91,11 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 
 	for _, p := range chain {
 		start := time.Now()
+		quotaBefore := r.getProviderQuotaJSON(p.Name())
 		resp, err := p.ChatCompletion(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
+		quotaAfter := r.getProviderQuotaJSON(p.Name())
 
 		if err == nil {
 			slog.Info("route_success",
@@ -104,6 +108,8 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 				Response:     resp,
 				UsedProvider: p.Name(),
 				Attempts:     attempts,
+				QuotaBefore:  quotaBefore,
+				QuotaAfter:   quotaAfter,
 			}, nil
 		}
 
@@ -150,9 +156,11 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 	var attempts []AttemptInfo
 	for i, p := range chain {
 		start := time.Now()
+		quotaBefore := r.getProviderQuotaJSON(p.Name())
 		events, err := p.ChatCompletionStream(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
+		quotaAfter := r.getProviderQuotaJSON(p.Name())
 		if err == nil {
 			if i > 0 {
 				slog.Info("stream_failover",
@@ -161,7 +169,12 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 					"attempt", i+1,
 				)
 			}
-			return &StreamRouteResult{Events: events, ProviderName: p.Name()}, nil
+			return &StreamRouteResult{
+				Events:       events,
+				ProviderName: p.Name(),
+				QuotaBefore:  quotaBefore,
+				QuotaAfter:   quotaAfter,
+			}, nil
 		}
 
 		cat := models.ClassifyError(err)

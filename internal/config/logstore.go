@@ -181,31 +181,47 @@ func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 
 // queryLatest fetches the newest N entries without any filtering overhead.
 func (s *LogStore) queryLatest(q *AccessLogQuery) ([]AccessLog, int, error) {
+	total := s.countTimeKeys(primaryKeyMin, primaryKeyMax)
+
 	iter, _ := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: primaryKeyMin,
 		UpperBound: primaryKeyMax,
 	})
 	defer iter.Close()
 
-	const maxScan = 10000
 	offset := (q.Page - 1) * q.PerPage
 	matches := make([]AccessLog, 0, q.PerPage)
-	scanned := 0
+	skipped := 0
 
-	for iter.SeekLT(primaryKeyMax); iter.Valid() && scanned < maxScan; iter.Prev() {
+	for iter.SeekLT(primaryKeyMax); iter.Valid(); iter.Prev() {
+		if skipped < offset {
+			skipped++
+			continue
+		}
 		var log AccessLog
 		if err := json.Unmarshal(iter.Value(), &log); err != nil {
 			continue
 		}
-		scanned++
-		if scanned > offset && len(matches) < q.PerPage {
-			matches = append(matches, log)
-		}
-		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
+		matches = append(matches, log)
+		if len(matches) >= q.PerPage {
 			break
 		}
 	}
-	return matches, scanned, nil
+	return matches, total, nil
+}
+
+// countTimeKeys counts primary keys in [lower, upper) without reading values.
+func (s *LogStore) countTimeKeys(lower, upper []byte) int {
+	iter, _ := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: lower,
+		UpperBound: upper,
+	})
+	defer iter.Close()
+	n := 0
+	for iter.First(); iter.Valid() && n < 10000000; iter.Next() {
+		n++
+	}
+	return n
 }
 
 // queryByTime iterates the primary time index. Every candidate must be
@@ -254,6 +270,12 @@ func (s *LogStore) queryByModel(q *AccessLogQuery) ([]AccessLog, int, error) {
 		return nil, 0, err
 	}
 
+	modelOnly := q.ApiKeyID == nil && q.Status == nil
+	var total int
+	if modelOnly {
+		total = s.countTimeKeys(lowerBound, upperBound)
+	}
+
 	iter, _ := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
@@ -264,10 +286,6 @@ func (s *LogStore) queryByModel(q *AccessLogQuery) ([]AccessLog, int, error) {
 	offset := (q.Page - 1) * q.PerPage
 	matches := make([]AccessLog, 0, q.PerPage)
 	scanned := 0
-
-	// When only model filter is active we can skip per-candidate
-	// unmarshaling — every key in the index already matches.
-	modelOnly := q.ApiKeyID == nil && q.Status == nil
 
 	for iter.SeekLT(upperBound); iter.Valid() && scanned < maxScan; iter.Prev() {
 		_, counter := decodeModelIndexKey(iter.Key())
@@ -300,7 +318,11 @@ func (s *LogStore) queryByModel(q *AccessLogQuery) ([]AccessLog, int, error) {
 			break
 		}
 	}
-	return matches, scanned, nil
+
+	if !modelOnly {
+		total = scanned
+	}
+	return matches, total, nil
 }
 
 func (s *LogStore) readPrimary(tsNano, counter uint64) (*AccessLog, error) {

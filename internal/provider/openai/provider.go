@@ -46,7 +46,7 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 		apiKey: apiKey,
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   60 * time.Second,
+			Timeout:   300 * time.Second,
 		},
 		supportedTools: st,
 	}

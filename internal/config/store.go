@@ -983,6 +983,8 @@ type AccessLog struct {
 	ClientResp   string `db:"client_resp" json:"client_resp"`
 	UpstreamReq  string `db:"upstream_req" json:"upstream_req"`
 	UpstreamResp string `db:"upstream_resp" json:"upstream_resp"`
+	QuotaBefore  string `db:"quota_before" json:"quota_before"`
+	QuotaAfter   string `db:"quota_after" json:"quota_after"`
 }
 
 // AccessLogQuery 访问日志查询参数

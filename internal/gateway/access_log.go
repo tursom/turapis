@@ -26,6 +26,8 @@ type AccessLogCollector struct {
 	clientResponse  string
 	upstreamReq     string
 	upstreamResp    string
+	quotaBefore     string
+	quotaAfter      string
 }
 
 func (c *AccessLogCollector) SetClientBody(b string) {
@@ -74,6 +76,13 @@ func (c *AccessLogCollector) SetTokens(in, out int) {
 func (c *AccessLogCollector) SetError(msg string) {
 	c.mu.Lock()
 	c.errorMsg = msg
+	c.mu.Unlock()
+}
+
+func (c *AccessLogCollector) SetQuota(before, after string) {
+	c.mu.Lock()
+	c.quotaBefore = before
+	c.quotaAfter = after
 	c.mu.Unlock()
 }
 
@@ -279,6 +288,8 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		clientResp := collector.clientResponse
 		upstreamReq := collector.upstreamReq
 		upstreamResp := collector.upstreamResp
+		quotaBefore := collector.quotaBefore
+		quotaAfter := collector.quotaAfter
 		collector.mu.Unlock()
 
 		// 如果 handler 未显式设置 clientResponse，使用 recorder 捕获的响应体
@@ -305,6 +316,8 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 			ClientResp:   clientResp,
 			UpstreamReq:  upstreamReq,
 			UpstreamResp: upstreamResp,
+			QuotaBefore:  quotaBefore,
+			QuotaAfter:   quotaAfter,
 		}
 
 		select {

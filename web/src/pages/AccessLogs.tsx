@@ -98,6 +98,60 @@ export default function AccessLogs() {
     }
   }
 
+  const parseQuota = (raw: string): Record<string, { used_percent?: number; reset_after_seconds?: number; window_minutes?: number }> | null => {
+    if (!raw) return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+
+  const formatResetTime = (seconds: number): string => {
+    if (seconds <= 0) return '已重置'
+    const h = Math.floor(seconds / 3600)
+    const m = Math.floor((seconds % 3600) / 60)
+    const s = seconds % 60
+    if (h > 0) return `${h}h${m}m 后重置`
+    if (m > 0) return `${m}m${s}s 后重置`
+    return `${s}s 后重置`
+  }
+
+  const renderQuotaEntry = (key: string, entry: { used_percent?: number; reset_after_seconds?: number; window_minutes?: number }) => {
+    if (!entry || entry.used_percent === undefined) return null
+    const color = entry.used_percent > 80 ? '#ff4d4f' : entry.used_percent > 50 ? '#faad14' : '#52c41a'
+    return (
+      <div key={key} style={{ marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 500, color: '#999', textTransform: 'uppercase' }}>{key}: </span>
+        <span style={{ fontSize: 13, fontWeight: 600, color }}>{entry.used_percent.toFixed(1)}%</span>
+        {entry.reset_after_seconds !== undefined && entry.reset_after_seconds > 0 && (
+          <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>{formatResetTime(entry.reset_after_seconds)}</span>
+        )}
+      </div>
+    )
+  }
+
+  const renderQuotaSection = (label: string, quotaJson: string) => {
+    const quota = parseQuota(quotaJson)
+    if (!quota) {
+      return (
+        <div style={{ padding: '8px 12px', color: '#ccc', fontSize: 12, fontStyle: 'italic' }}>无数据</div>
+      )
+    }
+    const entries = Object.entries(quota)
+    if (entries.length === 0) {
+      return (
+        <div style={{ padding: '8px 12px', color: '#ccc', fontSize: 12, fontStyle: 'italic' }}>无数据</div>
+      )
+    }
+    return (
+      <div style={{ padding: '8px 12px', background: '#fafafa', borderRadius: 4, border: '1px solid #f0f0f0' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 4 }}>{label}</div>
+        {entries.map(([key, val]) => renderQuotaEntry(key, val))}
+      </div>
+    )
+  }
+
   const handleRowClick = (id: number) => {
     setSelectedLogId(id)
     setDetailData(null)
@@ -283,7 +337,31 @@ export default function AccessLogs() {
                     <div><span style={{ color: '#999', fontSize: 12 }}>供应商</span><div style={{ fontSize: 13 }}>{detailData.provider_name || '-'}</div></div>
                     <div><span style={{ color: '#999', fontSize: 12 }}>Token (入/出)</span><div style={{ fontSize: 13 }}>{detailData.tokens_in} / {detailData.tokens_out}</div></div>
                     <div><span style={{ color: '#999', fontSize: 12 }}>耗时</span><div style={{ fontSize: 13 }}>{detailData.duration_ms} ms</div></div>
+                    {detailData.error_msg && (
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <span style={{ color: '#999', fontSize: 12 }}>错误信息</span>
+                        <div style={{
+                          fontSize: 13, color: '#ff4d4f', marginTop: 2,
+                          padding: '6px 10px', background: '#fff2f0',
+                          borderRadius: 4, border: '1px solid #ffccc7',
+                          wordBreak: 'break-all', maxHeight: 120, overflowY: 'auto',
+                        }}>{detailData.error_msg}</div>
+                      </div>
+                    )}
                   </div>
+
+                  {(detailData.quota_before || detailData.quota_after) && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{
+                        fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 8,
+                        borderBottom: '1px solid #f0f0f0', paddingBottom: 4,
+                      }}>额度变化</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {renderQuotaSection('调用前', detailData.quota_before)}
+                        {renderQuotaSection('调用后', detailData.quota_after)}
+                      </div>
+                    </div>
+                  )}
 
                   {(['client_req', 'client_resp', 'upstream_req', 'upstream_resp'] as const).map(section => {
                     const raw: string = detailData[section]

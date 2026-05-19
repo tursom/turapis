@@ -41,6 +41,8 @@ interface PipelineCanvasProps {
   onCreateMapping: (modelName: string, providerId: number) => void
   onEditMapping: (mapping: ModelMapping) => void
   onDeleteMapping: (id: number) => void
+  onClearModelMappings?: (modelName: string) => void
+  onClearProviderMappings?: (providerId: number) => void
 }
 
 function computeNodes(
@@ -164,8 +166,12 @@ export default function PipelineCanvas({
   onCreateMapping,
   onEditMapping,
   onDeleteMapping,
+  onClearModelMappings,
+  onClearProviderMappings,
 }: PipelineCanvasProps) {
-  const [contextMenu, setContextMenu] = useState<{ modelName: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    type: 'model'; modelName: string } | { type: 'provider'; providerId: number } | null>(null)
+  const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
 
   const initialNodes = useMemo(
     () => computeNodes(providers, mappings, filterModel, focusedModel),
@@ -282,7 +288,12 @@ export default function PipelineCanvas({
           event.preventDefault()
           if (node.type === 'model') {
             const d = node.data as ModelNodeData
-            setContextMenu({ modelName: d.modelName, x: event.clientX, y: event.clientY })
+            setContextMenu({ type: 'model', modelName: d.modelName })
+            setContextMenuPos({ x: event.clientX, y: event.clientY })
+          } else if (node.type === 'provider') {
+            const d = node.data as ProviderNodeData
+            setContextMenu({ type: 'provider', providerId: d.provider.id })
+            setContextMenuPos({ x: event.clientX, y: event.clientY })
           }
         }}
         onPaneClick={() => setContextMenu(null)}
@@ -333,8 +344,8 @@ export default function PipelineCanvas({
         <div
           style={{
             position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
+            left: contextMenuPos.x,
+            top: contextMenuPos.y,
             zIndex: 1000,
             background: '#fff',
             border: '1px solid #d9d9d9',
@@ -345,6 +356,29 @@ export default function PipelineCanvas({
           }}
           onClick={() => setContextMenu(null)}
         >
+          {contextMenu.type === 'model' && (
+            <div
+              style={{
+                padding: '8px 12px',
+                cursor: 'pointer',
+                borderRadius: 6,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 13,
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setContextMenu(null)
+                onFocusModel?.(contextMenu.modelName)
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f5ff' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+            >
+              <SettingOutlined style={{ color: '#1677ff' }} />
+              单独配置
+            </div>
+          )}
           <div
             style={{
               padding: '8px 12px',
@@ -358,13 +392,17 @@ export default function PipelineCanvas({
             onClick={(e) => {
               e.stopPropagation()
               setContextMenu(null)
-              onFocusModel?.(contextMenu.modelName)
+              if (contextMenu.type === 'model') {
+                onClearModelMappings?.(contextMenu.modelName)
+              } else {
+                onClearProviderMappings?.(contextMenu.providerId)
+              }
             }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f5ff' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#fff1f0' }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
           >
-            <SettingOutlined style={{ color: '#1677ff' }} />
-            单独配置
+            <ClearOutlined style={{ color: '#ff4d4f' }} />
+            清空路由
           </div>
         </div>
       )}

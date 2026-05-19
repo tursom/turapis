@@ -108,6 +108,8 @@ export interface AccessLog {
   client_resp: string
   upstream_req: string
   upstream_resp: string
+  quota_before: string
+  quota_after: string
 }
 
 export interface AccessLogResponse {

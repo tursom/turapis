@@ -57,6 +57,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		c.SetModel(unified.Model)
 		c.SetProvider(result.UsedProvider)
 		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
+		c.SetQuota(result.QuotaBefore, result.QuotaAfter)
 		if b, err := json.Marshal(unified); err == nil {
 			c.SetUpstreamReq(string(b))
 		}
@@ -84,6 +85,7 @@ func (g *Gateway) handleStreamCompletions(w http.ResponseWriter, r *http.Request
 	if c := collectorFromContext(r.Context()); c != nil {
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)
+		c.SetQuota(streamResult.QuotaBefore, streamResult.QuotaAfter)
 	}
 	filtered := make(chan models.UnifiedStreamEvent, 8)
 	go func() {

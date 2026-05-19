@@ -206,6 +206,35 @@ export default function Routing() {
     setModalOpen(true)
   }, [])
 
+  const handleClearModelMappings = useCallback(async (modelName: string) => {
+    try {
+      const modelMappings = mappings.filter((m) => m.model_name === modelName)
+      for (const m of modelMappings) {
+        await deleteModelMapping(m.id)
+      }
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+      message.success(`已清空 ${modelName} 的全部路由 (${modelMappings.length} 条)`)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '清空失败')
+    }
+  }, [mappings])
+
+  const handleClearProviderMappings = useCallback(async (providerId: number) => {
+    try {
+      const providerMappings = mappings.filter((m) => m.provider_id === providerId)
+      for (const m of providerMappings) {
+        await deleteModelMapping(m.id)
+      }
+      const refreshed = await fetchModelMappings()
+      setMappings(refreshed)
+      const name = providers.find((p) => p.id === providerId)?.name ?? `#${providerId}`
+      message.success(`已清空 ${name} 的全部路由 (${providerMappings.length} 条)`)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '清空失败')
+    }
+  }, [mappings, providers])
+
   const modelNames = useMemo(() => [...new Set(mappings.map((m) => m.model_name))].sort(), [mappings])
 
   const chainGroupsForDisplay = chainGroups.length > 0
@@ -300,6 +329,8 @@ export default function Routing() {
           onCreateMapping={handleCreateMapping}
           onEditMapping={handleEditMapping}
           onDeleteMapping={handleDeleteMapping}
+          onClearModelMappings={handleClearModelMappings}
+          onClearProviderMappings={handleClearProviderMappings}
         />
         {focusedModel ? (
           <DefaultChainBar
