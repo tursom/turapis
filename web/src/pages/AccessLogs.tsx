@@ -179,6 +179,25 @@ export default function AccessLogs() {
     )
   }
 
+  const hasQuotaData = (quotaJson: string) => {
+    const quota = parseQuota(quotaJson)
+    if (!quota) return false
+    return Object.values(quota).some(entry => entry && entry.used_percent !== undefined)
+  }
+
+  const renderAttemptQuota = (attempt: AttemptRecord) => {
+    if (!hasQuotaData(attempt.quota_before) && !hasQuotaData(attempt.quota_after)) return null
+    return (
+      <div style={{ marginTop: 8, paddingLeft: 30 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>额度变化</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8 }}>
+          {renderQuotaSection('尝试前', attempt.quota_before)}
+          {renderQuotaSection('尝试后', attempt.quota_after)}
+        </div>
+      </div>
+    )
+  }
+
   const handleRowClick = (id: number) => {
     setSelectedLogId(id)
     setDetailData(null)
@@ -405,26 +424,28 @@ export default function AccessLogs() {
                         <div style={{ background: '#fafafa', borderRadius: 4, border: '1px solid #f0f0f0', overflow: 'hidden' }}>
                           {attempts.map((a, i) => (
                             <div key={i} style={{
-                              display: 'flex', alignItems: 'center', gap: 10,
                               padding: '8px 12px',
                               borderBottom: i < attempts.length - 1 ? '1px solid #f0f0f0' : 'none',
                               background: a.success ? '#f6ffed' : '#fff2f0',
                             }}>
-                              <span style={{
-                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                width: 20, height: 20, borderRadius: '50%',
-                                background: a.success ? '#52c41a' : '#ff4d4f', color: '#fff',
-                                fontSize: 11, fontWeight: 600, flexShrink: 0,
-                              }}>{a.attempt_num}</span>
-                              <span style={{ fontSize: 13, fontWeight: 500, minWidth: 120 }}>{short(a.provider)}</span>
-                              <span style={{
-                                display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontSize: 11,
-                                color: a.success ? '#52c41a' : '#ff4d4f',
-                                background: a.success ? '#f6ffed' : '#fff1f0',
-                                border: `1px solid ${a.success ? '#b7eb8f' : '#ffa39e'}`,
-                              }}>{a.success ? '成功' : a.status_code || 'err'}</span>
-                              <span style={{ color: '#999', fontSize: 12, fontFamily: 'monospace' }}>{a.duration_ms}ms</span>
-                              {a.error && <span style={{ color: '#ff4d4f', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.error}</span>}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{
+                                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                  width: 20, height: 20, borderRadius: '50%',
+                                  background: a.success ? '#52c41a' : '#ff4d4f', color: '#fff',
+                                  fontSize: 11, fontWeight: 600, flexShrink: 0,
+                                }}>{a.attempt_num}</span>
+                                <span style={{ fontSize: 13, fontWeight: 500, minWidth: 120 }}>{short(a.provider)}</span>
+                                <span style={{
+                                  display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontSize: 11,
+                                  color: a.success ? '#52c41a' : '#ff4d4f',
+                                  background: a.success ? '#f6ffed' : '#fff1f0',
+                                  border: `1px solid ${a.success ? '#b7eb8f' : '#ffa39e'}`,
+                                }}>{a.success ? '成功' : a.status_code || 'err'}</span>
+                                <span style={{ color: '#999', fontSize: 12, fontFamily: 'monospace' }}>{a.duration_ms}ms</span>
+                                {a.error && <span style={{ color: '#ff4d4f', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.error}</span>}
+                              </div>
+                              {renderAttemptQuota(a)}
                             </div>
                           ))}
                         </div>

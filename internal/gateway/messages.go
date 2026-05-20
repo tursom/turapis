@@ -65,6 +65,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 		c.SetModel(unified.Model)
 		c.SetProvider(result.UsedProvider)
 		c.SetTokens(result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens)
+		c.SetQuota(result.QuotaBefore, result.QuotaAfter)
 		if b, err := json.Marshal(result.Response); err == nil {
 			c.SetUpstreamResp(string(b))
 		}

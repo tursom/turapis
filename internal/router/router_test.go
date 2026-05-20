@@ -133,6 +133,27 @@ func primaryUsed(t *testing.T, quota map[string]interface{}) float64 {
 	return used
 }
 
+func seedStoredQuota(t *testing.T, store *config.Store, providerName string, used float64) {
+	t.Helper()
+	p, err := store.GetProviderByName(providerName)
+	if err != nil {
+		t.Fatalf("get provider %s: %v", providerName, err)
+	}
+	q, err := json.Marshal(map[string]interface{}{
+		"primary": map[string]interface{}{
+			"used_percent":        used,
+			"reset_after_seconds": 600,
+			"window_minutes":      300,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal quota: %v", err)
+	}
+	if err := store.SaveProviderQuota(p.ID, q); err != nil {
+		t.Fatalf("save quota for %s: %v", providerName, err)
+	}
+}
+
 func TestRouteNonStreamSavesQuotaOnSuccess(t *testing.T) {
 	store, registry, r := setupRouterTest(t)
 	p := &testProvider{
@@ -236,15 +257,15 @@ func TestRouteRawStreamSavesQuotaAcrossFailover(t *testing.T) {
 	registerTestProvider(t, store, registry, failed, 10)
 	registerTestProvider(t, store, registry, success, 20)
 
-	body, providerName, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
+	result, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
 	if err != nil {
 		t.Fatalf("route raw stream: %v", err)
 	}
-	defer body.Close()
-	if providerName != success.name {
-		t.Fatalf("provider name = %s, want %s", providerName, success.name)
+	defer result.Body.Close()
+	if result.ProviderName != success.name {
+		t.Fatalf("provider name = %s, want %s", result.ProviderName, success.name)
 	}
-	data, err := io.ReadAll(body)
+	data, err := io.ReadAll(result.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -257,5 +278,35 @@ func TestRouteRawStreamSavesQuotaAcrossFailover(t *testing.T) {
 	}
 	if got := primaryUsed(t, storedQuota(t, store, success.name)); got != 7.0 {
 		t.Fatalf("success raw provider used_percent = %v, want 7", got)
+	}
+}
+
+func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{
+		name: "raw-provider-no-quota",
+		rawResp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("data: ok\n\n")),
+		},
+	}
+	registerTestProvider(t, store, registry, p, 10)
+	seedStoredQuota(t, store, p.name, 33.0)
+
+	result, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
+	if err != nil {
+		t.Fatalf("route raw stream: %v", err)
+	}
+	defer result.Body.Close()
+
+	if got := primaryUsed(t, storedQuota(t, store, p.name)); got != 33.0 {
+		t.Fatalf("stored used_percent = %v, want existing quota 33", got)
+	}
+	if !strings.Contains(result.QuotaBefore, `"used_percent":33`) {
+		t.Fatalf("quota before = %q, want existing quota", result.QuotaBefore)
+	}
+	if result.QuotaAfter != result.QuotaBefore {
+		t.Fatalf("quota after = %q, want unchanged quota %q", result.QuotaAfter, result.QuotaBefore)
 	}
 }

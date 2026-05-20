@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,10 @@ import (
 )
 
 type gatewayRawProvider struct {
-	name string
-	body string
+	name       string
+	body       string
+	header     http.Header
+	statusCode int
 }
 
 func (p *gatewayRawProvider) Name() string { return p.name }
@@ -42,11 +45,27 @@ func (p *gatewayRawProvider) Protocol() models.ProtocolType { return models.Prot
 func (p *gatewayRawProvider) SupportsTool(string) bool { return true }
 
 func (p *gatewayRawProvider) RawResponsesStream(context.Context, []byte) (*http.Response, error) {
+	header := p.header
+	if header == nil {
+		header = http.Header{}
+	}
+	statusCode := p.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
 	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{},
+		StatusCode: statusCode,
+		Header:     header,
 		Body:       io.NopCloser(strings.NewReader(p.body)),
 	}, nil
+}
+
+func rawQuotaHeader(used string) http.Header {
+	h := http.Header{}
+	h.Set("x-codex-primary-used-percent", used)
+	h.Set("x-codex-primary-reset-after-seconds", "300")
+	h.Set("x-codex-primary-window-minutes", "300")
+	return h
 }
 
 func TestRawResponsesUsageParserCapturesCompletedUsage(t *testing.T) {
@@ -80,11 +99,11 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 		`data: {"type":"response.output_text.delta","delta":"hello"}` + "\n\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":321,"output_tokens":54}}}` + "\n\n"
-	p := &gatewayRawProvider{name: "codex-raw", body: rawBody}
+	p := &gatewayRawProvider{name: "codex-raw", body: rawBody, header: rawQuotaHeader("42")}
 	if err := store.CreateProvider(&config.Provider{
 		Name:           p.name,
 		BaseURL:        "https://example.test",
-		APIKey:         `{"tokens":{"access_token":"test-token"}}`,
+		APIKey:         `{"tokens":{"access_token":"test-token","quota":{"primary":{"used_percent":11,"reset_after_seconds":600,"window_minutes":300}}}}`,
 		Protocol:       "openai",
 		AuthMode:       "oauth",
 		Priority:       10,
@@ -126,5 +145,111 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 	}
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("model = %q, want gpt-5.4", got.Model)
+	}
+	assertQuotaUsed(t, got.QuotaBefore, 11)
+	assertQuotaUsed(t, got.QuotaAfter, 42)
+
+	stored, err := store.GetProviderByName(p.name)
+	if err != nil {
+		t.Fatalf("get provider: %v", err)
+	}
+	rawQuota := config.ParseProviderQuota(stored.APIKey)
+	if rawQuota == nil {
+		t.Fatalf("stored quota = %v, want refreshed quota", rawQuota)
+	}
+	assertQuotaUsed(t, string(*rawQuota), 42)
+}
+
+func TestRawResponsesProxyRecordsSuccessfulFailoverQuotaInAccessLog(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	registry := provider.NewRegistry()
+	failed := &gatewayRawProvider{
+		name:       "codex-failed",
+		body:       "quota exhausted",
+		header:     rawQuotaHeader("99"),
+		statusCode: http.StatusTooManyRequests,
+	}
+	rawBody := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":10,"output_tokens":5}}}` + "\n\n"
+	success := &gatewayRawProvider{name: "codex-success", body: rawBody, header: rawQuotaHeader("42")}
+	createRawProvider(t, store, failed, 10, `{"tokens":{"access_token":"failed-token","quota":{"primary":{"used_percent":90,"reset_after_seconds":600,"window_minutes":300}}}}`)
+	createRawProvider(t, store, success, 20, `{"tokens":{"access_token":"success-token","quota":{"primary":{"used_percent":11,"reset_after_seconds":600,"window_minutes":300}}}}`)
+	registry.Register(failed)
+	registry.Register(success)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	req.Header.Set("Authorization", "Bearer eyJ-test")
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	logs, total, err := store.QueryAccessLogs(config.AccessLogQuery{Page: 1, PerPage: 10})
+	if err != nil {
+		t.Fatalf("query access logs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("logs total/len = %d/%d, want 1/1", total, len(logs))
+	}
+	got := logs[0]
+	assertQuotaUsed(t, got.QuotaBefore, 11)
+	assertQuotaUsed(t, got.QuotaAfter, 42)
+
+	var attempts []config.AttemptRecord
+	if err := json.Unmarshal([]byte(got.AttemptsJSON), &attempts); err != nil {
+		t.Fatalf("unmarshal attempts: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts len = %d, want 2: %#v", len(attempts), attempts)
+	}
+	if attempts[0].Success {
+		t.Fatalf("first attempt should fail: %#v", attempts[0])
+	}
+	assertQuotaUsed(t, attempts[0].QuotaAfter, 99)
+	if !attempts[1].Success {
+		t.Fatalf("second attempt should succeed: %#v", attempts[1])
+	}
+	assertQuotaUsed(t, attempts[1].QuotaBefore, 11)
+	assertQuotaUsed(t, attempts[1].QuotaAfter, 42)
+}
+
+func createRawProvider(t *testing.T, store *config.Store, p *gatewayRawProvider, priority int, apiKey string) {
+	t.Helper()
+	if err := store.CreateProvider(&config.Provider{
+		Name:           p.name,
+		BaseURL:        "https://example.test",
+		APIKey:         apiKey,
+		Protocol:       "openai",
+		AuthMode:       "oauth",
+		Priority:       priority,
+		Enabled:        true,
+		SupportedTools: "[]",
+	}); err != nil {
+		t.Fatalf("create provider %s: %v", p.name, err)
+	}
+}
+
+func assertQuotaUsed(t *testing.T, raw string, want float64) {
+	t.Helper()
+	var quota map[string]map[string]float64
+	if err := json.Unmarshal([]byte(raw), &quota); err != nil {
+		t.Fatalf("unmarshal quota %q: %v", raw, err)
+	}
+	got, ok := quota["primary"]["used_percent"]
+	if !ok {
+		t.Fatalf("quota missing primary used_percent: %#v", quota)
+	}
+	if got != want {
+		t.Fatalf("primary used_percent = %v, want %v", got, want)
 	}
 }

@@ -17,81 +17,97 @@ import (
 
 // AccessLogCollector 线程安全的请求元数据收集器
 type AccessLogCollector struct {
-	mu              sync.Mutex
-	model           string
-	providerName    string
-	tokensIn        int
-	tokensOut       int
-	errorMsg        string
-	clientBody      string
-	clientResponse  string
-	upstreamReq     string
-	upstreamResp    string
-	quotaBefore     string
-	quotaAfter      string
-	attempts        []config.AttemptRecord
+	mu             sync.Mutex
+	model          string
+	providerName   string
+	tokensIn       int
+	tokensOut      int
+	errorMsg       string
+	clientBody     string
+	clientResponse string
+	upstreamReq    string
+	upstreamResp   string
+	quotaBefore    string
+	quotaAfter     string
+	attempts       []config.AttemptRecord
 }
 
 func (c *AccessLogCollector) SetClientBody(b string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.clientBody = b
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetClientResponse(r string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.clientResponse = r
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetUpstreamReq(r string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.upstreamReq = r
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetUpstreamResp(r string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.upstreamResp = r
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetModel(m string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.model = m
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetProvider(p string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.providerName = p
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetTokens(in, out int) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.tokensIn = in
 	c.tokensOut = out
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetError(msg string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.errorMsg = msg
-	c.mu.Unlock()
 }
 
 func (c *AccessLogCollector) SetQuota(before, after string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.quotaBefore = before
 	c.quotaAfter = after
-	c.mu.Unlock()
+	for i := len(c.attempts) - 1; i >= 0; i-- {
+		if !c.attempts[i].Success {
+			continue
+		}
+		if c.attempts[i].QuotaBefore == "" {
+			c.attempts[i].QuotaBefore = before
+		}
+		if c.attempts[i].QuotaAfter == "" {
+			c.attempts[i].QuotaAfter = after
+		}
+		break
+	}
 }
 
 func (c *AccessLogCollector) RecordAttempt(a config.AttemptRecord) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.attempts = append(c.attempts, a)
-	c.mu.Unlock()
+	if a.Success {
+		c.quotaBefore = a.QuotaBefore
+		c.quotaAfter = a.QuotaAfter
+	}
 }
 
 func (c *AccessLogCollector) Model() string {
@@ -314,15 +330,20 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		}
 
 		inTokens, outTokens := collector.Tokens()
-		collector.mu.Lock()
-		clientBody := collector.clientBody
-		clientResp := collector.clientResponse
-		upstreamReq := collector.upstreamReq
-		upstreamResp := collector.upstreamResp
-		quotaBefore := collector.quotaBefore
-		quotaAfter := collector.quotaAfter
-		attemptsCopy := collector.attempts
-		collector.mu.Unlock()
+		var clientBody, clientResp, upstreamReq, upstreamResp string
+		var quotaBefore, quotaAfter string
+		var attemptsCopy []config.AttemptRecord
+		func() {
+			collector.mu.Lock()
+			defer collector.mu.Unlock()
+			clientBody = collector.clientBody
+			clientResp = collector.clientResponse
+			upstreamReq = collector.upstreamReq
+			upstreamResp = collector.upstreamResp
+			quotaBefore = collector.quotaBefore
+			quotaAfter = collector.quotaAfter
+			attemptsCopy = collector.attempts
+		}()
 
 		var attemptsJSON string
 		if len(attemptsCopy) > 0 {

@@ -9,17 +9,35 @@ function windowLabel(m: number) {
   return '30d'
 }
 
+function resetLabel(seconds: number) {
+  if (seconds <= 0) return ''
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (d > 0) return h > 0 ? `${d}d${h}h` : m > 0 ? `${d}d${m}m` : `${d}d`
+  if (h > 0) return m > 0 ? `${h}h${m}m` : `${h}h`
+  if (m > 0) return s > 0 ? `${m}m${s}s` : `${m}m`
+  return `${s}s`
+}
+
 function QuotaBar({ entry }: { entry: QuotaEntry }) {
   const pct = entry.used_percent
   const color = pct >= 80 ? '#ff4d4f' : pct >= 50 ? '#fa8c16' : '#52c41a'
+  const resetStr = entry.reset_after_seconds > 0 ? resetLabel(entry.reset_after_seconds) : ''
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
-      <span style={{ fontSize: 11, width: 24, textAlign: 'right' }}>{windowLabel(entry.window_minutes)}</span>
-      <span style={{ width: 48, height: 10, background: '#f0f0f0', borderRadius: 3, overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle' }}>
-        <span style={{ display: 'block', width: `${Math.min(pct, 100)}%`, height: '100%', background: color, borderRadius: 3, transition: 'width .3s' }} />
-      </span>
-      <span style={{ fontSize: 11, color, fontWeight: 600, minWidth: 32 }}>{String(pct)}%</span>
-    </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginRight: 8, minWidth: 80 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <span style={{ fontSize: 10, color: '#999', width: 20, textAlign: 'right' }}>{windowLabel(entry.window_minutes)}</span>
+        <span style={{ width: 48, height: 8, background: '#f0f0f0', borderRadius: 3, overflow: 'hidden', display: 'inline-block', verticalAlign: 'middle' }}>
+          <span style={{ display: 'block', width: `${Math.min(pct, 100)}%`, height: '100%', background: color, borderRadius: 3, transition: 'width .3s' }} />
+        </span>
+        <span style={{ fontSize: 11, color, fontWeight: 600, minWidth: 32 }}>{String(pct)}%</span>
+      </div>
+      {resetStr && (
+        <span style={{ fontSize: 10, color: '#999', textAlign: 'center' }}>{resetStr} 后刷新</span>
+      )}
+    </div>
   )
 }
 
@@ -27,7 +45,7 @@ function formatQuota(q: QuotaInfo | undefined) {
   if (!q) return '-'
   const entries = [q.primary, q.secondary, q.tertiary].filter((e): e is QuotaEntry => e != null)
   if (entries.length === 0) return '-'
-  return <span style={{ display: 'inline-flex', flexWrap: 'nowrap' }}>{entries.map((e, i) => <QuotaBar key={i} entry={e} />)}</span>
+  return <span style={{ display: 'inline-flex', flexWrap: 'nowrap', alignItems: 'flex-start' }}>{entries.map((e, i) => <QuotaBar key={i} entry={e} />)}</span>
 }
 
   const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string; proxy: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]', proxy: '' }

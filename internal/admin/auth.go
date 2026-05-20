@@ -76,17 +76,20 @@ func (a *AdminAuth) initAdminUser() {
 func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 	ip := r.RemoteAddr
 
-	a.mu.Lock()
-	now := time.Now()
-	windowStart := now.Add(-rateWindow)
+	var now time.Time
 	var recent []time.Time
-	for _, t := range a.attempts[ip] {
-		if t.After(windowStart) {
-			recent = append(recent, t)
+	func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		now = time.Now()
+		windowStart := now.Add(-rateWindow)
+		for _, t := range a.attempts[ip] {
+			if t.After(windowStart) {
+				recent = append(recent, t)
+			}
 		}
-	}
-	a.attempts[ip] = recent
-	a.mu.Unlock()
+		a.attempts[ip] = recent
+	}()
 
 	if len(recent) >= rateMaxAttempts {
 		w.Header().Set("Content-Type", "application/json")
@@ -108,9 +111,11 @@ func (a *AdminAuth) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.store.ValidateUserPassword(body.Username, body.Password)
 	if err != nil {
-		a.mu.Lock()
-		a.attempts[ip] = append(a.attempts[ip], now)
-		a.mu.Unlock()
+		func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.attempts[ip] = append(a.attempts[ip], now)
+		}()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
