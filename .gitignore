@@ -19,7 +19,8 @@ Thumbs.db
 
 # Env
 .env
-.env.*
+.env.local
+.env.*.local
 
 # Frontend
 web/node_modules/
