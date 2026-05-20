@@ -19,12 +19,14 @@ import (
 
 type gatewayRawProvider struct {
 	name       string
+	id         int
 	body       string
 	header     http.Header
 	statusCode int
 }
 
 func (p *gatewayRawProvider) Name() string { return p.name }
+func (p *gatewayRawProvider) ID() int    { return p.id }
 
 func (p *gatewayRawProvider) ChatCompletion(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
 	return &models.UnifiedResponse{}, nil
@@ -149,7 +151,7 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 	assertQuotaUsed(t, got.QuotaBefore, 11)
 	assertQuotaUsed(t, got.QuotaAfter, 42)
 
-	stored, err := store.GetProviderByName(p.name)
+	stored, err := store.GetProvider(p.id)
 	if err != nil {
 		t.Fatalf("get provider: %v", err)
 	}
@@ -223,9 +225,70 @@ func TestRawResponsesProxyRecordsSuccessfulFailoverQuotaInAccessLog(t *testing.T
 	assertQuotaUsed(t, attempts[1].QuotaAfter, 42)
 }
 
+func TestRawResponsesProxyKeepsFailedAttemptQuotaWhenSuccessfulFailoverHasNoQuota(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	registry := provider.NewRegistry()
+	failed := &gatewayRawProvider{
+		name:       "codex-failed-with-quota",
+		body:       "quota exhausted",
+		header:     rawQuotaHeader("99"),
+		statusCode: http.StatusTooManyRequests,
+	}
+	rawBody := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":10,"output_tokens":5}}}` + "\n\n"
+	success := &gatewayRawProvider{name: "codex-success-no-quota", body: rawBody}
+	createRawProvider(t, store, failed, 10, `{"tokens":{"access_token":"failed-token","quota":{"primary":{"used_percent":90,"reset_after_seconds":600,"window_minutes":300}}}}`)
+	createRawProvider(t, store, success, 20, `{"tokens":{"access_token":"success-token"}}`)
+	registry.Register(failed)
+	registry.Register(success)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	req.Header.Set("Authorization", "Bearer eyJ-test")
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	logs, total, err := store.QueryAccessLogs(config.AccessLogQuery{Page: 1, PerPage: 10})
+	if err != nil {
+		t.Fatalf("query access logs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("logs total/len = %d/%d, want 1/1", total, len(logs))
+	}
+	got := logs[0]
+	assertQuotaUsed(t, got.QuotaBefore, 90)
+	assertQuotaUsed(t, got.QuotaAfter, 99)
+
+	var attempts []config.AttemptRecord
+	if err := json.Unmarshal([]byte(got.AttemptsJSON), &attempts); err != nil {
+		t.Fatalf("unmarshal attempts: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts len = %d, want 2: %#v", len(attempts), attempts)
+	}
+	assertQuotaUsed(t, attempts[0].QuotaAfter, 99)
+	if !attempts[1].Success {
+		t.Fatalf("second attempt should succeed: %#v", attempts[1])
+	}
+	if attempts[1].QuotaBefore != "" || attempts[1].QuotaAfter != "" {
+		t.Fatalf("success attempt quota should be empty: %#v", attempts[1])
+	}
+}
+
 func createRawProvider(t *testing.T, store *config.Store, p *gatewayRawProvider, priority int, apiKey string) {
 	t.Helper()
-	if err := store.CreateProvider(&config.Provider{
+	stored := &config.Provider{
 		Name:           p.name,
 		BaseURL:        "https://example.test",
 		APIKey:         apiKey,
@@ -234,9 +297,11 @@ func createRawProvider(t *testing.T, store *config.Store, p *gatewayRawProvider,
 		Priority:       priority,
 		Enabled:        true,
 		SupportedTools: "[]",
-	}); err != nil {
+	}
+	if err := store.CreateProvider(stored); err != nil {
 		t.Fatalf("create provider %s: %v", p.name, err)
 	}
+	p.id = stored.ID
 }
 
 func assertQuotaUsed(t *testing.T, raw string, want float64) {

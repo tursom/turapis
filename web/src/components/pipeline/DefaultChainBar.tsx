@@ -258,7 +258,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
                     }}
                   >
                     <HolderOutlined style={{ color: '#bfbfbf', fontSize: 10, flexShrink: 0 }} />
-                    <Text style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{provider.name}</Text>
+                    <Text style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999', fontSize: 10, marginRight: 4 }}>#{provider.id}</span>{provider.name}</Text>
                     <Tag
                       color={provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : 'purple'}
                       style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px', flexShrink: 0 }}
@@ -311,7 +311,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
               size="small"
               style={{ minWidth: 160 }}
               placeholder="Add provider..."
-              options={availableProviders.map((p) => ({ value: p.id, label: p.name }))}
+              options={availableProviders.map((p) => ({ value: p.id, label: `#${p.id} ${p.name}` }))}
               onChange={(val) => handleAddProvider(val as number)}
               onBlur={() => setAddingProvider(false)}
             />

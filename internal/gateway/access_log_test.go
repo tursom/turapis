@@ -40,6 +40,50 @@ func TestAccessLogCollectorSetQuotaBackfillsSuccessfulAttempt(t *testing.T) {
 	}
 }
 
+func TestAccessLogCollectorSetQuotaDoesNotClearExistingQuota(t *testing.T) {
+	before := `{"primary":{"used_percent":11}}`
+	after := `{"primary":{"used_percent":42}}`
+	c := &AccessLogCollector{}
+	c.RecordAttempt(config.AttemptRecord{
+		Provider:    "codex-success",
+		QuotaBefore: before,
+		QuotaAfter:  after,
+		Success:     true,
+		AttemptNum:  1,
+	})
+
+	c.SetQuota("", "")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.quotaBefore != before || c.quotaAfter != after {
+		t.Fatalf("collector quota = %q/%q, want preserved %q/%q", c.quotaBefore, c.quotaAfter, before, after)
+	}
+}
+
+func TestQuotaFromAttemptsFallsBackToFailedAttemptQuota(t *testing.T) {
+	before := `{"primary":{"used_percent":90}}`
+	after := `{"primary":{"used_percent":99}}`
+	gotBefore, gotAfter := quotaFromAttempts("", "", []config.AttemptRecord{
+		{
+			Provider:    "codex-failed",
+			QuotaBefore: before,
+			QuotaAfter:  after,
+			Success:     false,
+			AttemptNum:  1,
+		},
+		{
+			Provider:   "no-quota-success",
+			Success:    true,
+			AttemptNum: 2,
+		},
+	})
+
+	if gotBefore != before || gotAfter != after {
+		t.Fatalf("fallback quota = %q/%q, want %q/%q", gotBefore, gotAfter, before, after)
+	}
+}
+
 func TestAccessLogCollectorRecordAttemptSetsSuccessfulQuota(t *testing.T) {
 	before := `{"primary":{"used_percent":11}}`
 	after := `{"primary":{"used_percent":42}}`

@@ -64,15 +64,15 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 		}
 		if rs, ok := p.(rawStreamer); ok {
 			start := time.Now()
-			quotaBefore := r.getProviderQuotaJSON(p.Name())
+			quotaBefore := r.getProviderQuotaJSON(p.ID())
 			resp, err := rs.RawResponsesStream(ctx, rawBody)
 			duration := time.Since(start)
 			if err != nil {
 				recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, i+1)
 				continue
 			}
-			r.saveQuotaFromHeaders(p.Name(), resp.Header)
-			quotaAfter := r.getProviderQuotaJSON(p.Name())
+			r.saveQuotaFromHeaders(p.ID(), resp.Header)
+			quotaAfter := r.getProviderQuotaJSON(p.ID())
 			if resp.StatusCode != 200 {
 				recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, i+1)
 				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))

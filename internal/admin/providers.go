@@ -86,7 +86,7 @@ func (a *Admin) updateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 同步更新 Registry（删除旧的，注册新的）
-	a.registry.Delete(p.Name)
+	a.registry.Delete(p.ID)
 	a.registerProviderInstance(&p)
 
 	writeJSON(w, http.StatusOK, p)
@@ -99,8 +99,7 @@ func (a *Admin) deleteProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先获取 Provider 名称用于 Registry 删除
-	p, err := a.store.GetProvider(id)
+	_, err = a.store.GetProvider(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -111,7 +110,7 @@ func (a *Admin) deleteProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.registry.Delete(p.Name)
+	a.registry.Delete(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -137,13 +136,13 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 	var prov provider.Provider
 	switch p.Protocol {
 	case "openai":
-		op := openai.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+		op := openai.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 			op.SetSearXNG(searxngURL)
 		}
 		prov = op
 	case "anthropic":
-		prov = anthropic.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+		prov = anthropic.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 	default:
 		return
 	}

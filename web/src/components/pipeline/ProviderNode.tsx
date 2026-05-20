@@ -76,6 +76,7 @@ function ProviderNode({ data, selected }: NodeProps) {
       />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
         <div style={{ fontWeight: 600, fontSize: 14, color: '#1d1d1d', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 4 }}>
+          <span style={{ color: '#999', fontSize: 10, marginRight: 4 }}>#{provider.id}</span>
           {provider.name}
         </div>
         {enabled

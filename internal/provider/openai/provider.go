@@ -20,6 +20,7 @@ import (
 
 // OpenAIProvider 实现 OpenAI 协议的 Provider
 type OpenAIProvider struct {
+	id             int
 	name           string
 	url            string
 	apiKey         string
@@ -31,7 +32,7 @@ type OpenAIProvider struct {
 	lastQuota      map[string]interface{}
 }
 
-func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
+func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
 	st := make(map[string]bool, len(supportedTools))
 	for _, t := range supportedTools {
 		st[t] = true
@@ -41,6 +42,7 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	return &OpenAIProvider{
+		id:     id,
 		name:   name,
 		url:    strings.TrimSuffix(baseURL, "/"),
 		apiKey: apiKey,
@@ -53,6 +55,7 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 }
 
 func (p *OpenAIProvider) Name() string                  { return p.name }
+func (p *OpenAIProvider) ID() int                    { return p.id }
 func (p *OpenAIProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
 func (p *OpenAIProvider) SupportsTool(name string) bool {
 	if p.supportedTools == nil {

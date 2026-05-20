@@ -179,13 +179,14 @@ export default function Providers() {
           <thead>
             <tr style={{ borderBottom: '1px solid #f0f0f0', textAlign: 'left' }}>
               <th style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.size === providers.length && providers.length > 0} onChange={toggleSelectAll} /></th>
-              <th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>认证</th><th style={{ padding: 8 }}>额度</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
+              <th style={{ padding: 8 }}>ID</th><th style={{ padding: 8 }}>名称</th><th style={{ padding: 8 }}>协议</th><th style={{ padding: 8 }}>认证</th><th style={{ padding: 8 }}>额度</th><th style={{ padding: 8 }}>优先级</th><th style={{ padding: 8 }}>启用</th><th style={{ padding: 8 }}>支持工具</th><th style={{ padding: 8 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {providers.map(p => (
               <tr key={p.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                 <td style={{ padding: 8 }}><input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)} /></td>
+                <td style={{ padding: 8, color: '#999', fontSize: 11 }}>#{p.id}</td>
                 <td style={{ padding: 8 }}>{p.name}</td>
                 <td style={{ padding: 8 }}>{p.protocol}</td>
               <td style={{ padding: 8 }}>{p.auth_mode}</td>

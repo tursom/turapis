@@ -74,13 +74,13 @@ func main() {
 		}
 		switch p.Protocol {
 		case "openai":
-			prov := po.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+			prov := po.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 			if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 				prov.SetSearXNG(searxngURL)
 			}
 			registry.Register(prov)
 		case "anthropic":
-			registry.Register(pa.New(p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy))
+			registry.Register(pa.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy))
 		}
 	}
 	slog.Info("loaded providers from database", "count", len(dbProviders))

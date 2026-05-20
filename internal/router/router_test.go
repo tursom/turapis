@@ -15,6 +15,7 @@ import (
 
 type testProvider struct {
 	name string
+	id   int
 
 	quota          map[string]interface{}
 	completionResp *models.UnifiedResponse
@@ -26,6 +27,7 @@ type testProvider struct {
 }
 
 func (p *testProvider) Name() string { return p.name }
+func (p *testProvider) ID() int    { return p.id }
 
 func (p *testProvider) ChatCompletion(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
 	if p.completionErr != nil {
@@ -92,22 +94,23 @@ func registerTestProvider(t *testing.T, store *config.Store, registry *providerp
 	if err := store.CreateProvider(stored); err != nil {
 		t.Fatalf("create provider %s: %v", p.name, err)
 	}
+	p.id = stored.ID
 	registry.Register(p)
 }
 
-func storedQuota(t *testing.T, store *config.Store, providerName string) map[string]interface{} {
+func storedQuota(t *testing.T, store *config.Store, providerID int) map[string]interface{} {
 	t.Helper()
-	p, err := store.GetProviderByName(providerName)
+	p, err := store.GetProvider(providerID)
 	if err != nil {
-		t.Fatalf("get provider %s: %v", providerName, err)
+		t.Fatalf("get provider %d: %v", providerID, err)
 	}
 	raw := config.ParseProviderQuota(p.APIKey)
 	if raw == nil {
-		t.Fatalf("expected quota for provider %s", providerName)
+		t.Fatalf("expected quota for provider %d", providerID)
 	}
 	var quota map[string]interface{}
 	if err := json.Unmarshal(*raw, &quota); err != nil {
-		t.Fatalf("unmarshal quota for %s: %v", providerName, err)
+		t.Fatalf("unmarshal quota for %d: %v", providerID, err)
 	}
 	return quota
 }
@@ -133,11 +136,11 @@ func primaryUsed(t *testing.T, quota map[string]interface{}) float64 {
 	return used
 }
 
-func seedStoredQuota(t *testing.T, store *config.Store, providerName string, used float64) {
+func seedStoredQuota(t *testing.T, store *config.Store, providerID int, used float64) {
 	t.Helper()
-	p, err := store.GetProviderByName(providerName)
+	p, err := store.GetProvider(providerID)
 	if err != nil {
-		t.Fatalf("get provider %s: %v", providerName, err)
+		t.Fatalf("get provider %d: %v", providerID, err)
 	}
 	q, err := json.Marshal(map[string]interface{}{
 		"primary": map[string]interface{}{
@@ -150,7 +153,7 @@ func seedStoredQuota(t *testing.T, store *config.Store, providerName string, use
 		t.Fatalf("marshal quota: %v", err)
 	}
 	if err := store.SaveProviderQuota(p.ID, q); err != nil {
-		t.Fatalf("save quota for %s: %v", providerName, err)
+		t.Fatalf("save quota for %d: %v", providerID, err)
 	}
 }
 
@@ -176,7 +179,7 @@ func TestRouteNonStreamSavesQuotaOnSuccess(t *testing.T) {
 		t.Fatalf("used provider = %s, want %s", result.UsedProvider, p.name)
 	}
 
-	if got := primaryUsed(t, storedQuota(t, store, p.name)); got != 12.5 {
+	if got := primaryUsed(t, storedQuota(t, store, p.id)); got != 12.5 {
 		t.Fatalf("stored used_percent = %v, want 12.5", got)
 	}
 }
@@ -206,10 +209,10 @@ func TestRouteNonStreamSavesQuotaAcrossFailover(t *testing.T) {
 	if result.UsedProvider != success.name {
 		t.Fatalf("used provider = %s, want %s", result.UsedProvider, success.name)
 	}
-	if got := primaryUsed(t, storedQuota(t, store, failed.name)); got != 99.0 {
+	if got := primaryUsed(t, storedQuota(t, store, failed.id)); got != 99.0 {
 		t.Fatalf("failed provider used_percent = %v, want 99", got)
 	}
-	if got := primaryUsed(t, storedQuota(t, store, success.name)); got != 8.0 {
+	if got := primaryUsed(t, storedQuota(t, store, success.id)); got != 8.0 {
 		t.Fatalf("success provider used_percent = %v, want 8", got)
 	}
 }
@@ -231,7 +234,7 @@ func TestRouteStreamSavesQuotaOnSuccess(t *testing.T) {
 	if result.ProviderName != p.name {
 		t.Fatalf("provider name = %s, want %s", result.ProviderName, p.name)
 	}
-	if got := primaryUsed(t, storedQuota(t, store, p.name)); got != 23.0 {
+	if got := primaryUsed(t, storedQuota(t, store, p.id)); got != 23.0 {
 		t.Fatalf("stream provider used_percent = %v, want 23", got)
 	}
 }
@@ -273,10 +276,10 @@ func TestRouteRawStreamSavesQuotaAcrossFailover(t *testing.T) {
 		t.Fatalf("body = %q, want raw stream body", string(data))
 	}
 
-	if got := primaryUsed(t, storedQuota(t, store, failed.name)); got != 100.0 {
+	if got := primaryUsed(t, storedQuota(t, store, failed.id)); got != 100.0 {
 		t.Fatalf("failed raw provider used_percent = %v, want 100", got)
 	}
-	if got := primaryUsed(t, storedQuota(t, store, success.name)); got != 7.0 {
+	if got := primaryUsed(t, storedQuota(t, store, success.id)); got != 7.0 {
 		t.Fatalf("success raw provider used_percent = %v, want 7", got)
 	}
 }
@@ -292,7 +295,7 @@ func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
 		},
 	}
 	registerTestProvider(t, store, registry, p, 10)
-	seedStoredQuota(t, store, p.name, 33.0)
+	seedStoredQuota(t, store, p.id, 33.0)
 
 	result, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
 	if err != nil {
@@ -300,7 +303,7 @@ func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
 	}
 	defer result.Body.Close()
 
-	if got := primaryUsed(t, storedQuota(t, store, p.name)); got != 33.0 {
+	if got := primaryUsed(t, storedQuota(t, store, p.id)); got != 33.0 {
 		t.Fatalf("stored used_percent = %v, want existing quota 33", got)
 	}
 	if !strings.Contains(result.QuotaBefore, `"used_percent":33`) {

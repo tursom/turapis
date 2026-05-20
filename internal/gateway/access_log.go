@@ -84,6 +84,9 @@ func (c *AccessLogCollector) SetError(msg string) {
 func (c *AccessLogCollector) SetQuota(before, after string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if before == "" && after == "" {
+		return
+	}
 	c.quotaBefore = before
 	c.quotaAfter = after
 	for i := len(c.attempts) - 1; i >= 0; i-- {
@@ -104,10 +107,36 @@ func (c *AccessLogCollector) RecordAttempt(a config.AttemptRecord) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attempts = append(c.attempts, a)
-	if a.Success {
+	if a.Success && (a.QuotaBefore != "" || a.QuotaAfter != "") {
 		c.quotaBefore = a.QuotaBefore
 		c.quotaAfter = a.QuotaAfter
 	}
+}
+
+func quotaFromAttempts(before, after string, attempts []config.AttemptRecord) (string, string) {
+	if before != "" || after != "" {
+		return before, after
+	}
+	if b, a, ok := findAttemptQuota(attempts, true); ok {
+		return b, a
+	}
+	if b, a, ok := findAttemptQuota(attempts, false); ok {
+		return b, a
+	}
+	return before, after
+}
+
+func findAttemptQuota(attempts []config.AttemptRecord, successOnly bool) (string, string, bool) {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if successOnly && !attempts[i].Success {
+			continue
+		}
+		if attempts[i].QuotaBefore == "" && attempts[i].QuotaAfter == "" {
+			continue
+		}
+		return attempts[i].QuotaBefore, attempts[i].QuotaAfter, true
+	}
+	return "", "", false
 }
 
 func (c *AccessLogCollector) Model() string {
@@ -344,6 +373,7 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 			quotaAfter = collector.quotaAfter
 			attemptsCopy = collector.attempts
 		}()
+		quotaBefore, quotaAfter = quotaFromAttempts(quotaBefore, quotaAfter, attemptsCopy)
 
 		var attemptsJSON string
 		if len(attemptsCopy) > 0 {

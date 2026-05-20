@@ -54,7 +54,7 @@ func (r *Router) buildPriorityChain(ctx context.Context, modelName string) ([]pr
 	entries, err := r.store.GetPriorityChain(modelName)
 	if err == nil {
 		for _, e := range entries {
-			p, ok := r.registry.Get(e.Provider.Name)
+			p, ok := r.registry.Get(e.ProviderID)
 			if ok && !seen[p.Name()] && perms.ProviderAllowed(p.Name()) {
 				providers = append(providers, p)
 				seen[p.Name()] = true
@@ -66,7 +66,7 @@ func (r *Router) buildPriorityChain(ctx context.Context, modelName string) ([]pr
 		defaultEntries, err := r.store.GetDefaultPriorityChain()
 		if err == nil {
 			for _, e := range defaultEntries {
-				p, ok := r.registry.Get(e.Provider.Name)
+				p, ok := r.registry.Get(e.ProviderID)
 				if ok && !seen[p.Name()] && perms.ProviderAllowed(p.Name()) {
 					providers = append(providers, p)
 					seen[p.Name()] = true
@@ -92,11 +92,11 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 
 	for i, p := range chain {
 		start := time.Now()
-		quotaBefore := r.getProviderQuotaJSON(p.Name())
+		quotaBefore := r.getProviderQuotaJSON(p.ID())
 		resp, err := p.ChatCompletion(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
-		quotaAfter := r.getProviderQuotaJSON(p.Name())
+		quotaAfter := r.getProviderQuotaJSON(p.ID())
 
 		if err == nil {
 			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
@@ -160,11 +160,11 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 	var attempts []AttemptInfo
 	for i, p := range chain {
 		start := time.Now()
-		quotaBefore := r.getProviderQuotaJSON(p.Name())
+		quotaBefore := r.getProviderQuotaJSON(p.ID())
 		events, err := p.ChatCompletionStream(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
-		quotaAfter := r.getProviderQuotaJSON(p.Name())
+		quotaAfter := r.getProviderQuotaJSON(p.ID())
 		if err == nil {
 			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
 			if i > 0 {

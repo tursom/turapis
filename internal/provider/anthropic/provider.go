@@ -18,6 +18,7 @@ import (
 
 // AnthropicProvider 实现 Anthropic 协议的 Provider
 type AnthropicProvider struct {
+	id             int
 	name           string
 	url            string
 	apiKey         string
@@ -25,7 +26,7 @@ type AnthropicProvider struct {
 	supportedTools map[string]bool
 }
 
-func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string) *AnthropicProvider {
+func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *AnthropicProvider {
 	st := make(map[string]bool, len(supportedTools))
 	for _, t := range supportedTools {
 		st[t] = true
@@ -35,6 +36,7 @@ func New(name, baseURL, apiKey string, supportedTools []string, proxyURL string)
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	return &AnthropicProvider{
+		id:             id,
 		name:           name,
 		url:            strings.TrimSuffix(baseURL, "/"),
 		apiKey:         apiKey,
@@ -54,6 +56,7 @@ func (p *AnthropicProvider) SupportsTool(name string) bool {
 }
 
 func (p *AnthropicProvider) Name() string                 { return p.name }
+func (p *AnthropicProvider) ID() int                    { return p.id }
 func (p *AnthropicProvider) Protocol() models.ProtocolType { return models.ProtocolAnthropic }
 
 // ChatCompletion 发送非流式请求

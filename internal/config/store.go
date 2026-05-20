@@ -63,10 +63,10 @@ type ModelMapping struct {
 	CreatedAt  string `db:"created_at" json:"created_at"`
 }
 
-// PriorityChainEntry 优先级链中的一个条目（Provider + 优先级）
+// PriorityChainEntry 优先级链中的一个条目（Provider ID + 优先级）
 type PriorityChainEntry struct {
-	Provider Provider `json:"provider"`
-	Priority int      `json:"priority"`
+	ProviderID int `db:"provider_id" json:"provider_id"`
+	Priority   int `db:"priority" json:"priority"`
 }
 
 // Store SQLite 配置存储
@@ -251,18 +251,6 @@ func (s *Store) GetProvider(id int) (*Provider, error) {
 	return &p, nil
 }
 
-// GetProviderByName 按名称获取 Provider
-func (s *Store) GetProviderByName(name string) (*Provider, error) {
-	var p Provider
-	err := s.DB.Get(&p, "SELECT * FROM providers WHERE name = ?", name)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("provider %s not found", name)
-		}
-		return nil, fmt.Errorf("get provider by name: %w", err)
-	}
-	return &p, nil
-}
 
 // ListProviders 列出所有 Provider（按优先级排序）
 func (s *Store) ListProviders() ([]Provider, error) {
@@ -350,12 +338,7 @@ func (s *Store) ListModelMappings() ([]ModelMapping, error) {
 func (s *Store) GetPriorityChain(modelName string) ([]PriorityChainEntry, error) {
 	var entries []PriorityChainEntry
 	query := `
-		SELECT p.id AS "provider.id", p.name AS "provider.name", p.base_url AS "provider.base_url",
-		       p.api_key AS "provider.api_key", p.protocol AS "provider.protocol",
-		       p.auth_mode AS "provider.auth_mode",
-		       p.priority AS "provider.priority", p.enabled AS "provider.enabled",
-		       p.created_at AS "provider.created_at", p.updated_at AS "provider.updated_at",
-		       mm.priority
+		SELECT mm.provider_id, mm.priority
 		FROM model_mappings mm
 		JOIN providers p ON p.id = mm.provider_id
 		WHERE mm.model_name = ? AND mm.enabled = 1 AND p.enabled = 1
@@ -451,8 +434,8 @@ func (s *Store) GetProvidersWithAnyModel() (map[int]bool, error) {
 
 // GetDefaultPriorityChain 获取全局默认优先级链
 // 支持两种格式：
-//   旧格式: ["provider_a", "provider_b", "provider_c"] — 每个 provider 独立优先级
-//   新格式: [["provider_a", "provider_b"], ["provider_c"]] — 同组共享优先级
+//   旧格式: [101, 102, 103] — 每个 provider 独立优先级
+//   新格式: [[101, 102], [103]] — 同组共享优先级
 func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 	val, err := s.GetSetting("default_priority_chain")
 	if err != nil {
@@ -466,26 +449,26 @@ func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 		}
 		entries := make([]PriorityChainEntry, len(providers))
 		for i, p := range providers {
-			entries[i] = PriorityChainEntry{Provider: p, Priority: p.Priority}
+			entries[i] = PriorityChainEntry{ProviderID: p.ID, Priority: p.Priority}
 		}
 		return entries, nil
 	}
 
 	// 尝试新格式 [[group1], [group2], ...]
-	var groups [][]string
+	var groups [][]int
 	if err := json.Unmarshal([]byte(val), &groups); err == nil {
 		entries := make([]PriorityChainEntry, 0)
 		for gi, group := range groups {
 			basePriority := (gi + 1) * 10
-			for pi, name := range group {
-				p, err := s.GetProviderByName(name)
+			for pi, id := range group {
+				p, err := s.GetProvider(id)
 				if err != nil {
 					continue
 				}
 				if p.Enabled {
 					entries = append(entries, PriorityChainEntry{
-						Provider: *p,
-						Priority: basePriority + pi,
+						ProviderID: id,
+						Priority:   basePriority + pi,
 					})
 				}
 			}
@@ -493,20 +476,20 @@ func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 		return entries, nil
 	}
 
-	// 回退旧格式 []string
-	var providerNames []string
-	if err := json.Unmarshal([]byte(val), &providerNames); err != nil {
+	// 回退旧格式 []int
+	var providerIDs []int
+	if err := json.Unmarshal([]byte(val), &providerIDs); err != nil {
 		return nil, fmt.Errorf("parse default_priority_chain: %w", err)
 	}
 
-	entries := make([]PriorityChainEntry, 0, len(providerNames))
-	for i, name := range providerNames {
-		p, err := s.GetProviderByName(name)
+	entries := make([]PriorityChainEntry, 0, len(providerIDs))
+	for i, id := range providerIDs {
+		p, err := s.GetProvider(id)
 		if err != nil {
 			continue // skip unavailable providers
 		}
 		if p.Enabled {
-			entries = append(entries, PriorityChainEntry{Provider: *p, Priority: (i + 1) * 10})
+			entries = append(entries, PriorityChainEntry{ProviderID: id, Priority: (i + 1) * 10})
 		}
 	}
 	return entries, nil

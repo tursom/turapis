@@ -13,8 +13,8 @@ type quotaProvider interface {
 	LastQuota() map[string]interface{}
 }
 
-func (r *Router) getProviderQuotaJSON(providerName string) string {
-	p, err := r.store.GetProviderByName(providerName)
+func (r *Router) getProviderQuotaJSON(providerID int) string {
+	p, err := r.store.GetProvider(providerID)
 	if err != nil || p == nil {
 		return ""
 	}
@@ -30,28 +30,29 @@ func (r *Router) saveQuotaFromProvider(p provider.Provider) {
 	if !ok {
 		return
 	}
-	r.saveQuota(p.Name(), qp.LastQuota())
+	id := p.ID()
+	r.saveQuota(id, qp.LastQuota())
 }
 
-func (r *Router) saveQuotaFromHeaders(providerName string, h http.Header) {
-	r.saveQuota(providerName, provider.ParseQuota(h))
+func (r *Router) saveQuotaFromHeaders(providerID int, h http.Header) {
+	r.saveQuota(providerID, provider.ParseQuota(h))
 }
 
-func (r *Router) saveQuota(providerName string, quota map[string]interface{}) {
-	if r == nil || r.store == nil || providerName == "" || len(quota) == 0 {
+func (r *Router) saveQuota(providerID int, quota map[string]interface{}) {
+	if r == nil || r.store == nil || providerID == 0 || len(quota) == 0 {
 		return
 	}
-	p, err := r.store.GetProviderByName(providerName)
+	p, err := r.store.GetProvider(providerID)
 	if err != nil || p == nil {
-		slog.Warn("save_quota_provider_lookup_failed", "provider", providerName, "error", err)
+		slog.Warn("save_quota_provider_lookup_failed", "provider_id", providerID, "error", err)
 		return
 	}
 	qj, err := json.Marshal(quota)
 	if err != nil {
-		slog.Warn("save_quota_marshal_failed", "provider", providerName, "error", err)
+		slog.Warn("save_quota_marshal_failed", "provider_id", providerID, "error", err)
 		return
 	}
 	if err := r.store.SaveProviderQuota(p.ID, qj); err != nil {
-		slog.Warn("save_quota_failed", "provider", providerName, "error", err)
+		slog.Warn("save_quota_failed", "provider_id", providerID, "error", err)
 	}
 }

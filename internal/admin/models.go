@@ -93,7 +93,7 @@ func (a *Admin) discoverModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov, ok := a.registry.Get(p.Name)
+	prov, ok := a.registry.Get(p.ID)
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "provider not registered")
 		return
@@ -167,7 +167,7 @@ func (a *Admin) discoverAllModels(w http.ResponseWriter, r *http.Request) {
 	results := make([]result, 0, len(providers))
 
 	for _, p := range providers {
-		prov, ok := a.registry.Get(p.Name)
+		prov, ok := a.registry.Get(p.ID)
 		if !ok {
 			results = append(results, result{Provider: p.Name, Error: "not registered"})
 			continue
@@ -223,7 +223,7 @@ func (a *Admin) refreshOAuthTokens(w http.ResponseWriter, r *http.Request) {
 		} else {
 			results = append(results, refreshResult{Provider: p.Name, Success: true})
 			// Re-register with new token
-			a.registry.Delete(p.Name)
+			a.registry.Delete(p.ID)
 			pUpdated, _ := a.store.GetProvider(p.ID)
 			if pUpdated != nil {
 				a.registerProviderInstance(pUpdated)
@@ -273,7 +273,7 @@ func (a *Admin) getStatus(w http.ResponseWriter, r *http.Request) {
 		if models, err := a.store.GetProviderModels(p.ID); err == nil {
 			ps["discovered_models"] = len(models)
 		}
-		_, registered := a.registry.Get(p.Name)
+		_, registered := a.registry.Get(p.ID)
 		ps["registered"] = registered
 		providerStatuses = append(providerStatuses, ps)
 	}

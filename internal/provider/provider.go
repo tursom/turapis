@@ -72,6 +72,7 @@ func buildTransport(proxyURL *url.URL) *http.Transport {
 
 type Provider interface {
 	Name() string
+	ID() int
 	ChatCompletion(ctx context.Context, req *models.UnifiedRequest) (*models.UnifiedResponse, error)
 	ChatCompletionStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error)
 	ListModels(ctx context.Context) ([]models.ModelInfo, error)
@@ -81,23 +82,23 @@ type Provider interface {
 
 type Registry struct {
 	mu        sync.RWMutex
-	providers map[string]Provider
+	providers map[int]Provider
 }
 
 func NewRegistry() *Registry {
-	return &Registry{providers: make(map[string]Provider)}
+	return &Registry{providers: make(map[int]Provider)}
 }
 
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.providers[p.Name()] = p
+	r.providers[p.ID()] = p
 }
 
-func (r *Registry) Get(name string) (Provider, bool) {
+func (r *Registry) Get(id int) (Provider, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.providers[name]
+	p, ok := r.providers[id]
 	return p, ok
 }
 
@@ -111,8 +112,8 @@ func (r *Registry) List() []Provider {
 	return result
 }
 
-func (r *Registry) Delete(name string) {
+func (r *Registry) Delete(id int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.providers, name)
+	delete(r.providers, id)
 }
