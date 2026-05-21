@@ -4,8 +4,10 @@ package codexauth
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
+	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/email"
 )
 
@@ -73,4 +75,35 @@ func DefaultFlowConfig() FlowConfig {
 		PollTimeout:    120 * time.Second,
 		BrowserTimeout: 120 * time.Second,
 	}
+}
+
+// RegistryStore 定义 AccountRegistry 所需的 config.Store 方法子集。
+type RegistryStore interface {
+	CreateProviderFromSite(siteID int, nameOverride, apiKey string, oauthJSON json.RawMessage) (*config.Provider, int, error)
+	GetProviderAPIKey(id int) (string, error)
+	UpdateProviderAPIKey(id int, apiKey string) error
+	DeleteProvider(id int) error
+	CreateCodexAccount(a *config.CodexAccount) error
+	GetCodexAccount(id int) (*config.CodexAccount, error)
+	GetCodexAccountByAccountID(accountID string) (*config.CodexAccount, error)
+	ListCodexAccounts() ([]config.CodexAccount, error)
+	UpdateCodexAccount(a *config.CodexAccount) error
+	DeleteCodexAccount(id int) error
+	FindCodexAccountByProviderID(providerID int) (*config.CodexAccount, error)
+	UpdateCodexAccountStatus(id int, status, errorMsg string) error
+	UpdateCodexAccountRefresh(id int) error
+	UpdateCodexAccountHealth(id int) error
+}
+
+// RegFlowRunner 定义 AccountRegistry 所需的 AutoLoginFlow 方法子集。
+type RegFlowRunner interface {
+	RunRegister(ctx context.Context) (*FlowResult, *EmailCredential, error)
+	RunRelogin(ctx context.Context, ec *EmailCredential) (*FlowResult, error)
+}
+
+// LoginHistoryEntry 记录一次登录/注册事件。
+type LoginHistoryEntry struct {
+	Time    string `json:"time"`
+	Method  string `json:"method"` // "auto_register" | "email_code_login"
+	Success bool   `json:"success"`
 }
