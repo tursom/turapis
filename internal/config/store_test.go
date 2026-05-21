@@ -308,3 +308,209 @@ func TestCreateProviderFromSite_TransactionRollback(t *testing.T) {
 		t.Errorf("expected exactly 1 provider named 'rollback-provider', got %d", count)
 	}
 }
+
+// --- CodexAccount CRUD tests ---
+
+func TestCodexAccountCRUD(t *testing.T) {
+	store := setupTestStore(t)
+
+	a := &CodexAccount{
+		Email:     "test@example.com",
+		AccountID: "acc_test_crud",
+		UserID:    "user_test",
+		PlanType:  "free",
+		Status:    "active",
+		Metadata:  `{"email_credential":{"email":"test@example.com","provider":"mock","token":"tok_xxx"}}`,
+	}
+
+	if err := store.CreateCodexAccount(a); err != nil {
+		t.Fatalf("create codex account: %v", err)
+	}
+	if a.ID == 0 {
+		t.Error("expected non-zero id after create")
+	}
+	if a.CreatedAt == "" {
+		t.Error("expected CreatedAt to be set")
+	}
+
+	got, err := store.GetCodexAccount(a.ID)
+	if err != nil {
+		t.Fatalf("get codex account: %v", err)
+	}
+	if got.Email != "test@example.com" {
+		t.Errorf("Email = %s, want test@example.com", got.Email)
+	}
+	if got.AccountID != "acc_test_crud" {
+		t.Errorf("AccountID = %s, want acc_test_crud", got.AccountID)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %s, want active", got.Status)
+	}
+
+	got2, err := store.GetCodexAccountByAccountID("acc_test_crud")
+	if err != nil {
+		t.Fatalf("get codex account by account_id: %v", err)
+	}
+	if got2.ID != a.ID {
+		t.Errorf("ID = %d, want %d", got2.ID, a.ID)
+	}
+
+	_, err = store.FindCodexAccountByProviderID(-1)
+	if err == nil {
+		t.Error("expected error for non-matching provider_id")
+	}
+
+	a.PlanType = "plus"
+	a.Status = "expired"
+	a.ErrorMsg = "token expired"
+	a.LastRefresh = "2025-06-01T00:00:00Z"
+	if err := store.UpdateCodexAccount(a); err != nil {
+		t.Fatalf("update codex account: %v", err)
+	}
+	got3, _ := store.GetCodexAccount(a.ID)
+	if got3.PlanType != "plus" {
+		t.Errorf("PlanType = %s, want plus", got3.PlanType)
+	}
+	if got3.Status != "expired" {
+		t.Errorf("Status = %s, want expired", got3.Status)
+	}
+
+	if err := store.UpdateCodexAccountStatus(a.ID, "needs_login", "relogin required"); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	got4, _ := store.GetCodexAccount(a.ID)
+	if got4.Status != "needs_login" {
+		t.Errorf("Status = %s, want needs_login", got4.Status)
+	}
+	if got4.ErrorMsg != "relogin required" {
+		t.Errorf("ErrorMsg = %s, want relogin required", got4.ErrorMsg)
+	}
+
+	if err := store.UpdateCodexAccountRefresh(a.ID); err != nil {
+		t.Fatalf("update refresh: %v", err)
+	}
+	got5, _ := store.GetCodexAccount(a.ID)
+	if got5.LastRefresh == "" {
+		t.Error("expected LastRefresh to be set")
+	}
+
+	if err := store.UpdateCodexAccountHealth(a.ID); err != nil {
+		t.Fatalf("update health: %v", err)
+	}
+	got6, _ := store.GetCodexAccount(a.ID)
+	if got6.LastHealth == "" {
+		t.Error("expected LastHealth to be set")
+	}
+
+	if err := store.DeleteCodexAccount(a.ID); err != nil {
+		t.Fatalf("delete codex account: %v", err)
+	}
+	_, err = store.GetCodexAccount(a.ID)
+	if err == nil {
+		t.Error("expected error after delete")
+	}
+}
+
+func TestListCodexAccounts_Empty(t *testing.T) {
+	store := setupTestStore(t)
+
+	accounts, err := store.ListCodexAccounts()
+	if err != nil {
+		t.Fatalf("list codex accounts: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Errorf("expected empty list, got %d accounts", len(accounts))
+	}
+	if accounts == nil {
+		t.Error("expected non-nil slice")
+	}
+
+	if err := store.CreateCodexAccount(&CodexAccount{Email: "a@test.com", AccountID: "acc_a", UserID: "user_a", Status: "active"}); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if err := store.CreateCodexAccount(&CodexAccount{Email: "b@test.com", AccountID: "acc_b", UserID: "user_b", Status: "expired"}); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+
+	accounts, err = store.ListCodexAccounts()
+	if err != nil {
+		t.Fatalf("list after create: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Errorf("expected 2 accounts, got %d", len(accounts))
+	}
+
+	active, err := store.ListActiveCodexAccounts()
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	if len(active) != 1 {
+		t.Errorf("expected 1 active account, got %d", len(active))
+	}
+	if active[0].Email != "a@test.com" {
+		t.Errorf("active Email = %s, want a@test.com", active[0].Email)
+	}
+}
+
+func TestCreateCodexAccount_DuplicateAccountID(t *testing.T) {
+	store := setupTestStore(t)
+
+	a := &CodexAccount{Email: "dup@test.com", AccountID: "acc_dup", UserID: "user_dup", Status: "active"}
+	if err := store.CreateCodexAccount(a); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	b := &CodexAccount{Email: "other@test.com", AccountID: "acc_dup", UserID: "user_other", Status: "active"}
+	if err := store.CreateCodexAccount(b); err == nil {
+		t.Error("expected UNIQUE constraint error on duplicate account_id")
+	}
+}
+
+func TestCodexAccount_ProviderCascade(t *testing.T) {
+	store := setupTestStore(t)
+
+	p := &Provider{Name: "cascade-test", BaseURL: "https://api.test.com", APIKey: "sk-test", Protocol: "openai", AuthMode: "api_key", Priority: 100, Enabled: true}
+	if err := store.CreateProvider(p); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+
+	a := &CodexAccount{Email: "cascade@test.com", AccountID: "acc_cascade", UserID: "user_cas", Status: "active"}
+	a.ProviderID = &p.ID
+	if err := store.CreateCodexAccount(a); err != nil {
+		t.Fatalf("create codex account: %v", err)
+	}
+
+	got, err := store.FindCodexAccountByProviderID(p.ID)
+	if err != nil {
+		t.Fatalf("find by provider_id: %v", err)
+	}
+	if got.ID != a.ID {
+		t.Errorf("expected account ID %d, got %d", a.ID, got.ID)
+	}
+
+	if err := store.DeleteProvider(p.ID); err != nil {
+		t.Fatalf("delete provider: %v", err)
+	}
+
+	got2, err := store.GetCodexAccount(a.ID)
+	if err != nil {
+		t.Fatalf("get codex account after provider delete: %v", err)
+	}
+	if got2.ProviderID != nil {
+		t.Errorf("expected ProviderID to be nil after cascade, got %v", *got2.ProviderID)
+	}
+}
+
+func TestGetCodexAccount_NotFound(t *testing.T) {
+	store := setupTestStore(t)
+
+	_, err := store.GetCodexAccount(-1)
+	if err == nil {
+		t.Error("expected error for non-existent id")
+	}
+
+	_, err = store.GetCodexAccountByAccountID("nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent account_id")
+	}
+}

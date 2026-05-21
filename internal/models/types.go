@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"io"
 )
 
 // ContentBlock 消息内容块，支持 text、tool_use、tool_result 三种类型
@@ -55,6 +56,9 @@ const (
 	ctxKeySessionUserID
 	ctxKeySessionRole
 	ctxKeyAttemptRecorder
+	// ctxKeyRawResponseBody 用于在 ChatCompletionStream 和 routeStream 之间传递
+	// codex Responses API 的原始 SSE 响应体，绕过 unified event 解析-重建循环。
+	ctxKeyRawResponseBody
 )
 
 // AttemptRecorder is called by the router for each provider attempt (success or failure).
@@ -130,13 +134,23 @@ func CodexVersionFromContext(ctx context.Context) string {
 	return ""
 }
 
-func WithRawProxy(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeyRawProxy, true)
+// WithRawResponseBody stores a raw SSE response body in context.
+// Used by ChatCompletionStream to pass the upstream codex Responses API body
+// to the router without converting through UnifiedStreamEvent.
+func WithRawResponseBody(ctx context.Context, body io.ReadCloser) context.Context {
+	return context.WithValue(ctx, ctxKeyRawResponseBody, body)
 }
 
-func IsRawProxy(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKeyRawProxy).(bool)
-	return v
+// RawResponseBodyFromContext retrieves the raw SSE response body from context.
+func RawResponseBodyFromContext(ctx context.Context) io.ReadCloser {
+	if b, ok := ctx.Value(ctxKeyRawResponseBody).(io.ReadCloser); ok {
+		return b
+	}
+	return nil
+}
+
+func WithRawProxy(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyRawProxy, true)
 }
 
 // UnifiedUsage 统一用量信息

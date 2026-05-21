@@ -59,6 +59,7 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 			AccessToken  string `json:"access_token"`
 			RefreshToken string `json:"refresh_token"`
 			IDToken      string `json:"id_token"`
+			ClientID     string `json:"client_id"`
 			ExpiresAt    int64  `json:"expires_at"`
 		} `json:"tokens"`
 	}
@@ -70,7 +71,10 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 		return fmt.Errorf("no refresh_token in credential")
 	}
 
-	clientID := extractClientID(creds.Tokens.AccessToken)
+	clientID := creds.Tokens.ClientID
+	if clientID == "" {
+		clientID = extractClientID(creds.Tokens.AccessToken)
+	}
 	if clientID == "" {
 		return fmt.Errorf("cannot extract client_id from access_token")
 	}
@@ -117,6 +121,7 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 			"access_token":  result.AccessToken,
 			"refresh_token": creds.Tokens.RefreshToken,
 			"id_token":      creds.Tokens.IDToken,
+			"client_id":     clientID,
 			"expires_at":    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UnixMilli(),
 		},
 	}

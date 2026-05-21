@@ -25,11 +25,6 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		c.SetClientBody(string(bodyBytes))
 	}
 
-	if models.IsRawProxy(r.Context()) || strings.HasPrefix(r.URL.Path, "/v1/responses") {
-		g.handleRawResponsesProxy(w, r.WithContext(models.WithRawBody(r.Context(), bodyBytes)), bodyBytes)
-		return
-	}
-
 	var respReq translate.ResponsesReq
 	if err := json.Unmarshal(bodyBytes, &respReq); err != nil {
 		slog.Warn("invalid_responses_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)
@@ -108,6 +103,32 @@ func (g *Gateway) handleStreamResponses(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
 		return
 	}
+
+	// codex Responses API 原始 SSE 透传路径：
+	// 当 ChatCompletionStream 检测到上游是 codex 且请求路径为 /v1/responses 时，
+	// 会将上游原始 SSE 响应体存入 StreamRouteResult.RawBody。
+	// 此处检测到 RawBody 后直接 pipe 给客户端，不再走 unified event 解析-重建，
+	// 避免 event 丢失导致 codex CLI 工具执行失败。
+	if streamResult.RawBody != nil {
+		defer streamResult.RawBody.Close()
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetModel(unified.Model)
+			c.SetProvider(streamResult.ProviderName)
+			c.SetQuota(streamResult.QuotaBefore, streamResult.QuotaAfter)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		var flusher http.Flusher
+		if f, ok := w.(http.Flusher); ok {
+			flusher = f
+		}
+		if err := copyRawResponsesProxy(w, flusher, streamResult.RawBody, collectorFromContext(r.Context())); err != nil {
+			slog.Warn("raw_stream_copy_failed", "provider", streamResult.ProviderName, "error", err)
+		}
+		return
+	}
+
 	if c := collectorFromContext(r.Context()); c != nil {
 		c.SetModel(unified.Model)
 		c.SetProvider(streamResult.ProviderName)

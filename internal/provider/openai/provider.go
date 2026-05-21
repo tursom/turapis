@@ -30,6 +30,9 @@ type OpenAIProvider struct {
 	nsMap          map[string]string
 	quotaMu        sync.RWMutex
 	lastQuota      map[string]interface{}
+	// lastRawBody 缓存 ChatCompletionStream 对 codex Responses API 调用
+	// 返回的原始 SSE 响应体，由 TakeRawBody 取走并清空。
+	lastRawBody io.ReadCloser
 }
 
 func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
@@ -216,11 +219,31 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req *models.Unified
 	return toUnifiedResponse(&oaiResp), nil
 }
 
-// ChatCompletionStream 发送流式请求
+// ChatCompletionStream 发送流式请求。
+// 对 JWT 认证 + /v1/responses 路径的 codex 请求，直接调用上游 Responses API
+// 并将原始 SSE 响应体存入 lastRawBody，由 TakeRawBody 交出。
+// 上游 SSE 原样透传，避免经过 UnifiedStreamEvent 解析-重建丢失事件。
 func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
 	if p.isJWT() && strings.HasPrefix(req.OriginalPath, "/v1/responses") {
 		if raw := models.RawBodyFromContext(ctx); len(raw) > 0 {
-			return p.responsesStreamRaw(ctx, raw)
+			// 直接调用 RawResponsesStream 获取上游原始 SSE 响应
+			resp, err := p.RawResponsesStream(ctx, raw)
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode != 200 {
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+				resp.Body.Close()
+				return nil, &models.UpstreamError{StatusCode: resp.StatusCode, Body: respBody}
+			}
+			p.setLastQuota(provider.ParseQuota(resp.Header))
+			// 将原始响应体缓存，由 router 层通过 TakeRawBody 取走
+			p.lastRawBody = resp.Body
+			// 返回一个仅含 Stop 事件的 channel，router 检测到 RawBody 后会忽略它
+			ch := make(chan models.UnifiedStreamEvent, 1)
+			ch <- models.UnifiedStreamEvent{Type: models.StreamEventStop}
+			close(ch)
+			return ch, nil
 		}
 	}
 	p.injectSearchIfNeeded(ctx, req)
@@ -939,11 +962,18 @@ func cloneQuota(q map[string]interface{}) map[string]interface{} {
 	if len(q) == 0 {
 		return nil
 	}
-	cloned := make(map[string]interface{}, len(q))
+	c := make(map[string]interface{}, len(q))
 	for k, v := range q {
-		cloned[k] = cloneQuotaValue(v)
+		c[k] = v
 	}
-	return cloned
+	return c
+}
+
+// TakeRawBody returns and clears the raw response body stored by a raw Responses API stream.
+func (p *OpenAIProvider) TakeRawBody() io.ReadCloser {
+	b := p.lastRawBody
+	p.lastRawBody = nil
+	return b
 }
 
 func cloneQuotaValue(v interface{}) interface{} {

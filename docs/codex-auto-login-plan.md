@@ -1,6 +1,6 @@
 # Codex 自动登录/注册接入 — 详细实现计划
 
-> **状态**: Wave 1 ✅ | Wave 2 ✅ | mailondeck_browserless ✅ | Wave 3-8 计划中  
+> **状态**: Wave 1 ✅ | Wave 2 ✅ | mailondeck_browserless ✅ | Wave 3 ✅ | Wave 4 ✅ | Wave 5-8 计划中  
 > **语言**: Go 1.26（后端）+ TypeScript/React 19（前端）  
 > **目标**: 在 turapis 项目中搭建 Codex 账号自动注册和自动登录的完整架子，支持：
 > - **自动注册**：tempmail.lol / emailondeck.com 接码 + browserless/chromium 浏览器自动化创建全新账号
@@ -932,7 +932,7 @@ LifecycleManager.Start(ctx)
 
 ## 5. 详细实现计划
 
-### 总览：8 个 Wave，6 个 Commit
+### 总览：8 个 Wave，2 个 Commit 已完成（Wave 1+2, Wave 3+4）
 
 ```
 Wave 0 (前置准备) ──────────────────────────────────────┐
@@ -1090,15 +1090,18 @@ TestBrowserlessConnectionError   PASS (0.00s)
 
 ---
 
-### Wave 3: 流程编排器 + 凭证加密（`internal/codexauth/flow.go` + `credentials.go`）
+### Wave 3: 流程编排器 + 凭证加密（`internal/codexauth/flow.go` + `credentials.go`）✅ 已完成
 
 **目标**: 编排完整自动注册、OAuth登录、自动重登流程 + 凭证加密存储
 
-**新建文件**:
-- `internal/codexauth/types.go`
-- `internal/codexauth/flow.go`
-- `internal/codexauth/credentials.go`
-- `internal/codexauth/flow_test.go`
+**已创建/修改文件**:
+- `internal/codexauth/types.go` — TokenSet、AccountIdentity、EmailCredential、FlowConfig、FlowResult、BrowserClient 接口
+- `internal/codexauth/flow.go` — AutoLoginFlow（RunRegister / RunLogin / RunRelogin）、PKCE 生成、OAuth 回调服务器、TokenSet→凭证JSON 转换、JWT 结构校验（alg/exp/iss/aud）、state CSRF 保护、动态 redirect_uri
+- `internal/codexauth/credentials.go` — EmailCredential ↔ JSON 序列化
+- `internal/codexauth/flow_test.go` — 13 个测试（含 2 个集成测试：真实 HTTP 回调服务器 + httptest token 端点）
+- `internal/codexauth/mocks_test.go` — moq 生成 BrowserClientMock
+- `internal/codexauth/mocks_email_test.go` — moq 生成 EmailProviderMock
+- `internal/provider/oauth_refresh.go` — 更新：优先读取 tokens.client_id，兜底 JWT 提取，刷新后保留
 
 | # | 任务 | 分类 | 技能 | 依赖 |
 |---|------|------|------|------|
@@ -1152,7 +1155,7 @@ func (f *AutoLoginFlow) RunEmailCodeLogin(ctx context.Context, emailCred *EmailC
 **本地回调服务器**:
 ```go
 // 在 flow.go 中启动一个临时 HTTP 服务器
-func startCallbackServer() (*CallbackServer, error) {
+**func** startCallbackServer() (*CallbackServer, error) {
     r := chi.NewRouter()
     s := &CallbackServer{codeCh: make(chan string, 1), errCh: make(chan error, 1)}
     
@@ -1173,20 +1176,29 @@ func startCallbackServer() (*CallbackServer, error) {
 }
 ```
 
-**验证**: `go test ./internal/codexauth/... -v -short`
+**安全加固（完成后陆续修复）**:
+- state CSRF 保护：回调服务器校验 state 参数防止同机进程抢注
+- 动态 redirect_uri：从 FlowConfig.CallbackPort 生成，不再硬编码 1455
+- JWT 结构校验：alg 非 none、exp 过期、iss/aud 匹配（标注「仅结构校验，不作密码学信任」）
+- callbackServer 抗噪声：错误 state 仅返回 HTTP 错误不终止 wait
+- TokenSetToCredentialJSON：从 access_token JWT 提取 client_id 存入凭证
+- oauth_refresh.go：优先读 tokens.client_id，兜底 JWT 提取，刷新后保留
 
-**提交**: `feat(codexauth): add auto-login flow orchestrator`
+**验证**: `go test ./internal/codexauth/... -v` → 13/13 PASS
+
+**提交**: `feat(codexauth): add auto-login flow orchestrator with security hardening`
 
 ---
 
-### Wave 4: 数据库 + Store 层
+### Wave 4: 数据库 + Store 层 ✅ 已完成
 
 **目标**: 创建 `codex_accounts` 表，在 `store.go` 添加 CRUD 方法
 
-**新建/修改文件**:
-- `internal/config/migrations/006_codex_accounts.sql`（新建）
-- `internal/config/store.go`（修改）
-- `internal/config/store_test.go`（修改）
+**已创建/修改文件**:
+- `internal/config/migrations/006_codex_accounts.sql` — codex_accounts 表（15 列、4 索引、CHECK 约束、provider_id FK ON DELETE SET NULL）
+- `internal/config/migrations/007_providers_name_unique.sql` — providers.name UNIQUE 索引（修复 TransactionRollback 测试）
+- `internal/config/store.go` — CodexAccount 类型 + 11 方法（7 标准 CRUD + ListActive + UpdateStatus + UpdateRefresh + UpdateHealth），Update/Delete 含 RowsAffected 检查
+- `internal/config/store_test.go` — 5 个测试（CRUD 全生命周期、空列表、唯一约束冲突、provider 级联 SET NULL、not-found）
 
 | # | 任务 | 分类 | 技能 | 依赖 |
 |---|------|------|------|------|
@@ -1207,9 +1219,9 @@ func (s *Store) DeleteCodexAccount(id int) error
 func (s *Store) FindCodexAccountByProviderID(providerID int) (*CodexAccount, error)
 ```
 
-**验证**: `go test ./internal/config/... -v -run CodexAccount`
+**验证**: `go test ./internal/config/... -v -run CodexAccount` → 5/5 PASS
 
-**提交**: `feat(config): add codex_accounts table with CRUD and settings`
+**提交**: `feat(config): add codex_accounts table with CRUD, UNIQUE index, RowsAffected checks`
 
 ---
 
@@ -1363,7 +1375,7 @@ gateway.SetCodexRoutes(codexAdmin.Routes())
 
 ## 6. 文件清单
 
-### 新建文件（已实现 10 个，计划 7 个）
+### 新建文件（已实现 16 个，计划 4 个）
 
 | 文件 | 状态 | Wave |
 |------|:---:|------|
@@ -1380,11 +1392,14 @@ gateway.SetCodexRoutes(codexAdmin.Routes())
 | `internal/browser/browserless_test.go` | ✅ | 2 |
 | `internal/browser/browserless_integration_test.go` | ✅ | 2 |
 | `internal/browser/env_test.go` | ✅ | 2 |
-| `internal/codexauth/types.go` | ⬜ | 3 |
-| `internal/codexauth/flow.go` | ⬜ | 3 |
-| `internal/codexauth/credentials.go` | ⬜ | 3 |
-| `internal/codexauth/flow_test.go` | ⬜ | 3 |
-| `internal/config/migrations/006_codex_accounts.sql` | ⬜ | 4 |
+| `internal/codexauth/types.go` | ✅ | 3 |
+| `internal/codexauth/flow.go` | ✅ | 3 |
+| `internal/codexauth/credentials.go` | ✅ | 3 |
+| `internal/codexauth/flow_test.go` | ✅ | 3 |
+| `internal/codexauth/mocks_test.go` | ✅ | 3 (moq) |
+| `internal/codexauth/mocks_email_test.go` | ✅ | 3 (moq) |
+| `internal/config/migrations/006_codex_accounts.sql` | ✅ | 4 |
+| `internal/config/migrations/007_providers_name_unique.sql` | ✅ | 4 (安全修复) |
 | `internal/codexauth/registry.go` | ⬜ | 5 |
 | `internal/codexauth/registry_test.go` | ⬜ | 5 |
 | `internal/codexauth/lifecycle.go` | ⬜ | 6 |
@@ -1417,8 +1432,9 @@ gateway.SetCodexRoutes(codexAdmin.Routes())
 | `go.mod` | 新增 chromedp 依赖 | 0 |
 | `docker-compose.yml` | 新增 browserless 服务 | 0 |
 | `internal/admin/admin.go` | 修复缺失路由 | 0, 7 |
-| `internal/config/store.go` | 新增 CodexAccount 类型 + CRUD | 4 |
-| `internal/config/store_test.go` | 新增测试 | 4 |
+| `internal/config/store.go` | 新增 CodexAccount 类型 + 11 方法 | 4 ✅ |
+| `internal/config/store_test.go` | 新增 5 个 CodexAccount 测试 | 4 ✅ |
+| `internal/provider/oauth_refresh.go` | 新增 client_id 读取 + 兜底 + 保留 | 4 ✅ |
 | `cmd/turapis/main.go` | 集成 codexauth | 7 |
 | `internal/gateway/gateway.go` | 挂载 codex 路由 | 7 |
 
@@ -1461,8 +1477,8 @@ Wave 1             Wave 2               │
               Wave 8 (frontend)
 
 并行机会:
-  - Wave 1 + Wave 2 → 100% 并行
-  - Wave 3 + Wave 4 → 100% 并行
+   - Wave 1 + Wave 2 → 100% 并行 ✅ 已完成
+   - Wave 3 + Wave 4 → 100% 并行 ✅ 已完成
 ```
 
 ---
@@ -1572,7 +1588,7 @@ services:
 
 ---
 
-> **文档版本**: v1.0  
-> **最后更新**: 2026-05-20  
-> **计划状态**: 待执行  
-> **预计工作量**: 6 个 commit（Wave 0-7）+ 1 个 PR（Wave 8 前端）
+> **文档版本**: v1.1  
+> **最后更新**: 2026-05-21  
+> **计划状态**: Wave 1-4 已实现，Wave 5-8 计划中  
+> **预计工作量**: 4 个 commit 已完成（Wave 0-4） + 2 个 commit 待执行（Wave 5-7） + 1 个 PR（Wave 8 前端）

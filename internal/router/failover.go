@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -174,12 +175,21 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 					"attempt", i+1,
 				)
 			}
-			return &StreamRouteResult{
+			result := &StreamRouteResult{
 				Events:       events,
 				ProviderName: p.Name(),
 				QuotaBefore:  quotaBefore,
 				QuotaAfter:   quotaAfter,
-			}, nil
+			}
+			// 若 provider 实现了 TakeRawBody（codex Responses API 原始 SSE 透传），
+			// 取出 raw body 填入结果，Gateway 会直接 pipe 给客户端。
+			type rawBodyProvider interface {
+				TakeRawBody() io.ReadCloser
+			}
+			if rbp, ok := p.(rawBodyProvider); ok {
+				result.RawBody = rbp.TakeRawBody()
+			}
+			return result, nil
 		}
 
 		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, i+1)

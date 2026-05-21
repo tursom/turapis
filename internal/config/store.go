@@ -17,20 +17,20 @@ import (
 )
 
 // Provider 上游 API 提供者配置
-	type Provider struct {
-	ID              int    `db:"id" json:"id"`
-	Name            string `db:"name" json:"name"`
-	BaseURL         string `db:"base_url" json:"base_url"`
-	APIKey          string `db:"api_key" json:"api_key"`
-	Protocol        string `db:"protocol" json:"protocol"`
-	AuthMode        string `db:"auth_mode" json:"auth_mode"`
-	Priority        int    `db:"priority" json:"priority"`
-	Enabled         bool   `db:"enabled" json:"enabled"`
-	SupportedTools  string `db:"supported_tools" json:"supported_tools"`
-	Proxy           string `db:"proxy" json:"proxy"`
-	Quota           *json.RawMessage `db:"-" json:"quota,omitempty"`
-	CreatedAt       string `db:"created_at" json:"created_at"`
-	UpdatedAt       string `db:"updated_at" json:"updated_at"`
+type Provider struct {
+	ID             int              `db:"id" json:"id"`
+	Name           string           `db:"name" json:"name"`
+	BaseURL        string           `db:"base_url" json:"base_url"`
+	APIKey         string           `db:"api_key" json:"api_key"`
+	Protocol       string           `db:"protocol" json:"protocol"`
+	AuthMode       string           `db:"auth_mode" json:"auth_mode"`
+	Priority       int              `db:"priority" json:"priority"`
+	Enabled        bool             `db:"enabled" json:"enabled"`
+	SupportedTools string           `db:"supported_tools" json:"supported_tools"`
+	Proxy          string           `db:"proxy" json:"proxy"`
+	Quota          *json.RawMessage `db:"-" json:"quota,omitempty"`
+	CreatedAt      string           `db:"created_at" json:"created_at"`
+	UpdatedAt      string           `db:"updated_at" json:"updated_at"`
 }
 
 // Site 站点预设（Provider 模板，不含认证信息）
@@ -251,7 +251,6 @@ func (s *Store) GetProvider(id int) (*Provider, error) {
 	return &p, nil
 }
 
-
 // ListProviders 列出所有 Provider（按优先级排序）
 func (s *Store) ListProviders() ([]Provider, error) {
 	var providers []Provider
@@ -433,9 +432,12 @@ func (s *Store) GetProvidersWithAnyModel() (map[int]bool, error) {
 }
 
 // GetDefaultPriorityChain 获取全局默认优先级链
-// 支持两种格式：
-//   旧格式: [101, 102, 103] — 每个 provider 独立优先级
-//   新格式: [[101, 102], [103]] — 同组共享优先级
+// 支持多种格式：
+//
+//	ID 新格式: [[101, 102], [103]] — 同组共享优先级（provider ID）
+//	名称新格式: [["name1", "name2"], ["name3"]] — 同组共享优先级（provider name）
+//	ID 旧格式: [101, 102, 103] — 每个 provider 独立优先级
+//	名称旧格式: ["name1", "name2"] — 每个 provider 独立优先级
 func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 	val, err := s.GetSetting("default_priority_chain")
 	if err != nil {
@@ -454,45 +456,116 @@ func (s *Store) GetDefaultPriorityChain() ([]PriorityChainEntry, error) {
 		return entries, nil
 	}
 
-	// 尝试新格式 [[group1], [group2], ...]
-	var groups [][]int
-	if err := json.Unmarshal([]byte(val), &groups); err == nil {
-		entries := make([]PriorityChainEntry, 0)
-		for gi, group := range groups {
-			basePriority := (gi + 1) * 10
-			for pi, id := range group {
-				p, err := s.GetProvider(id)
-				if err != nil {
-					continue
-				}
-				if p.Enabled {
-					entries = append(entries, PriorityChainEntry{
-						ProviderID: id,
-						Priority:   basePriority + pi,
-					})
-				}
-			}
+	// 尝试新格式（ID 版）[[group1], [group2], ...]
+	var groupsInt [][]int
+	if err := json.Unmarshal([]byte(val), &groupsInt); err == nil {
+		entries := s.chainFromIntGroups(groupsInt)
+		if len(entries) > 0 {
+			return entries, nil
 		}
-		return entries, nil
+	}
+
+	// 尝试新格式（名称版）[[name1, name2], [name3], ...]
+	var groupsStr [][]string
+	if err := json.Unmarshal([]byte(val), &groupsStr); err == nil {
+		entries := s.chainFromStrGroups(groupsStr)
+		if len(entries) > 0 {
+			return entries, nil
+		}
 	}
 
 	// 回退旧格式 []int
 	var providerIDs []int
-	if err := json.Unmarshal([]byte(val), &providerIDs); err != nil {
-		return nil, fmt.Errorf("parse default_priority_chain: %w", err)
+	if err := json.Unmarshal([]byte(val), &providerIDs); err == nil {
+		entries := s.chainFromIntSlice(providerIDs)
+		if len(entries) > 0 {
+			return entries, nil
+		}
 	}
 
-	entries := make([]PriorityChainEntry, 0, len(providerIDs))
-	for i, id := range providerIDs {
-		p, err := s.GetProvider(id)
-		if err != nil {
-			continue // skip unavailable providers
-		}
-		if p.Enabled {
-			entries = append(entries, PriorityChainEntry{ProviderID: id, Priority: (i + 1) * 10})
+	// 回退旧格式 []string
+	var providerNames []string
+	if err := json.Unmarshal([]byte(val), &providerNames); err == nil {
+		entries := s.chainFromStrSlice(providerNames)
+		if len(entries) > 0 {
+			return entries, nil
 		}
 	}
-	return entries, nil
+
+	return nil, fmt.Errorf("parse default_priority_chain: unrecognized format")
+}
+
+func (s *Store) chainFromIntGroups(groups [][]int) []PriorityChainEntry {
+	entries := make([]PriorityChainEntry, 0)
+	for gi, group := range groups {
+		basePriority := (gi + 1) * 10
+		for pi, id := range group {
+			p, err := s.GetProvider(id)
+			if err != nil || !p.Enabled {
+				continue
+			}
+			entries = append(entries, PriorityChainEntry{
+				ProviderID: id,
+				Priority:   basePriority + pi,
+			})
+		}
+	}
+	return entries
+}
+
+func (s *Store) chainFromStrGroups(groups [][]string) []PriorityChainEntry {
+	entries := make([]PriorityChainEntry, 0)
+	for gi, group := range groups {
+		basePriority := (gi + 1) * 10
+		for pi, name := range group {
+			id, err := s.GetProviderIDByName(name)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, PriorityChainEntry{
+				ProviderID: id,
+				Priority:   basePriority + pi,
+			})
+		}
+	}
+	return entries
+}
+
+func (s *Store) chainFromIntSlice(ids []int) []PriorityChainEntry {
+	entries := make([]PriorityChainEntry, 0, len(ids))
+	for i, id := range ids {
+		p, err := s.GetProvider(id)
+		if err != nil || !p.Enabled {
+			continue
+		}
+		entries = append(entries, PriorityChainEntry{ProviderID: id, Priority: (i + 1) * 10})
+	}
+	return entries
+}
+
+func (s *Store) chainFromStrSlice(names []string) []PriorityChainEntry {
+	entries := make([]PriorityChainEntry, 0, len(names))
+	for i, name := range names {
+		id, err := s.GetProviderIDByName(name)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, PriorityChainEntry{ProviderID: id, Priority: (i + 1) * 10})
+	}
+	return entries
+}
+
+// GetProviderIDByName 根据名称查询 Provider ID
+func (s *Store) GetProviderIDByName(name string) (int, error) {
+	var id int
+	err := s.DB.Get(&id, "SELECT id FROM providers WHERE name = ?", name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("provider %q not found", name)
+		}
+		return 0, fmt.Errorf("get provider by name: %w", err)
+	}
+	return id, nil
 }
 
 // --- Provider Models ---
@@ -531,6 +604,24 @@ func (s *Store) GetProviderModels(providerID int) ([]struct {
 	return models, nil
 }
 
+// CodexAccount Codex 自动登录账号记录
+type CodexAccount struct {
+	ID          int    `db:"id" json:"id"`
+	ProviderID  *int   `db:"provider_id" json:"provider_id"`
+	Email       string `db:"email" json:"email"`
+	AccountID   string `db:"account_id" json:"account_id"`
+	UserID      string `db:"user_id" json:"user_id"`
+	PlanType    string `db:"plan_type" json:"plan_type"`
+	Status      string `db:"status" json:"status"` // active|expired|needs_login|error
+	LastRefresh string `db:"last_refresh" json:"last_refresh"`
+	LastHealth  string `db:"last_health" json:"last_health"`
+	LastLogin   string `db:"last_login" json:"last_login"`
+	ErrorMsg    string `db:"error_msg" json:"error_msg,omitempty"`
+	Metadata    string `db:"metadata" json:"-"` // JSON blob：email_credential + login_history
+	CreatedAt   string `db:"created_at" json:"created_at"`
+	UpdatedAt   string `db:"updated_at" json:"updated_at"`
+}
+
 // User represents an admin panel user with role-based access.
 type User struct {
 	ID           int64  `db:"id"            json:"id"`
@@ -555,7 +646,7 @@ type APIKey struct {
 
 // APIKeyPermissions defines the parsed permissions JSON structure.
 type APIKeyPermissions struct {
-	AllowedModels   []string `json:"allowed_models,omitempty"`
+	AllowedModels    []string `json:"allowed_models,omitempty"`
 	AllowedProviders []string `json:"allowed_providers,omitempty"`
 }
 
@@ -1272,4 +1363,178 @@ func randomHex(n int) string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b)
+}
+
+// --- CodexAccount CRUD ---
+
+// CreateCodexAccount 创建 Codex 账号记录
+func (s *Store) CreateCodexAccount(a *CodexAccount) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	a.CreatedAt = now
+	a.UpdatedAt = now
+
+	result, err := s.DB.NamedExec(
+		`INSERT INTO codex_accounts (provider_id, email, account_id, user_id, plan_type, status,
+		 last_refresh, last_health, last_login, error_msg, metadata, created_at, updated_at)
+		 VALUES (:provider_id, :email, :account_id, :user_id, :plan_type, :status,
+		 :last_refresh, :last_health, :last_login, :error_msg, :metadata, :created_at, :updated_at)`,
+		a,
+	)
+	if err != nil {
+		return fmt.Errorf("create codex account: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	a.ID = int(id)
+	return nil
+}
+
+// GetCodexAccount 按主键获取 Codex 账号
+func (s *Store) GetCodexAccount(id int) (*CodexAccount, error) {
+	var a CodexAccount
+	err := s.DB.Get(&a, "SELECT * FROM codex_accounts WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("codex account %d not found", id)
+		}
+		return nil, fmt.Errorf("get codex account: %w", err)
+	}
+	return &a, nil
+}
+
+// GetCodexAccountByAccountID 按 account_id 唯一键获取 Codex 账号
+func (s *Store) GetCodexAccountByAccountID(accountID string) (*CodexAccount, error) {
+	var a CodexAccount
+	err := s.DB.Get(&a, "SELECT * FROM codex_accounts WHERE account_id = ?", accountID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("codex account %q not found", accountID)
+		}
+		return nil, fmt.Errorf("get codex account by account_id: %w", err)
+	}
+	return &a, nil
+}
+
+// ListCodexAccounts 列出所有 Codex 账号
+func (s *Store) ListCodexAccounts() ([]CodexAccount, error) {
+	var accounts []CodexAccount
+	err := s.DB.Select(&accounts, "SELECT * FROM codex_accounts ORDER BY created_at DESC")
+	if err != nil {
+		return nil, fmt.Errorf("list codex accounts: %w", err)
+	}
+	if accounts == nil {
+		accounts = []CodexAccount{}
+	}
+	return accounts, nil
+}
+
+// UpdateCodexAccount 更新 Codex 账号记录
+func (s *Store) UpdateCodexAccount(a *CodexAccount) error {
+	a.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	result, err := s.DB.NamedExec(
+		`UPDATE codex_accounts SET
+		 provider_id=:provider_id, email=:email, account_id=:account_id, user_id=:user_id,
+		 plan_type=:plan_type, status=:status, last_refresh=:last_refresh,
+		 last_health=:last_health, last_login=:last_login, error_msg=:error_msg,
+		 metadata=:metadata, updated_at=:updated_at
+		 WHERE id=:id`,
+		a,
+	)
+	if err != nil {
+		return fmt.Errorf("update codex account: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("codex account %d not found", a.ID)
+	}
+	return nil
+}
+
+// DeleteCodexAccount 删除 Codex 账号记录
+func (s *Store) DeleteCodexAccount(id int) error {
+	result, err := s.DB.Exec("DELETE FROM codex_accounts WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete codex account: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("codex account %d not found", id)
+	}
+	return nil
+}
+
+// FindCodexAccountByProviderID 按关联的 provider_id 查找 Codex 账号
+func (s *Store) FindCodexAccountByProviderID(providerID int) (*CodexAccount, error) {
+	var a CodexAccount
+	err := s.DB.Get(&a, "SELECT * FROM codex_accounts WHERE provider_id = ?", providerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("codex account for provider %d not found", providerID)
+		}
+		return nil, fmt.Errorf("find codex account by provider_id: %w", err)
+	}
+	return &a, nil
+}
+
+// ListActiveCodexAccounts 列出所有 active 状态的 Codex 账号
+func (s *Store) ListActiveCodexAccounts() ([]CodexAccount, error) {
+	var accounts []CodexAccount
+	err := s.DB.Select(&accounts, "SELECT * FROM codex_accounts WHERE status = 'active' ORDER BY created_at DESC")
+	if err != nil {
+		return nil, fmt.Errorf("list active codex accounts: %w", err)
+	}
+	if accounts == nil {
+		accounts = []CodexAccount{}
+	}
+	return accounts, nil
+}
+
+// UpdateCodexAccountStatus 部分更新 Codex 账号状态和错误信息
+func (s *Store) UpdateCodexAccountStatus(id int, status, errorMsg string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.DB.Exec(
+		`UPDATE codex_accounts SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?`,
+		status, errorMsg, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update codex account status: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("codex account %d not found", id)
+	}
+	return nil
+}
+
+// UpdateCodexAccountRefresh 更新 Codex 账号的 last_refresh 时间
+func (s *Store) UpdateCodexAccountRefresh(id int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.DB.Exec(
+		"UPDATE codex_accounts SET last_refresh = ?, updated_at = ? WHERE id = ?",
+		now, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update codex account refresh: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("codex account %d not found", id)
+	}
+	return nil
+}
+
+// UpdateCodexAccountHealth 更新 Codex 账号的 last_health 时间
+func (s *Store) UpdateCodexAccountHealth(id int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.DB.Exec(
+		"UPDATE codex_accounts SET last_health = ?, updated_at = ? WHERE id = ?",
+		now, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update codex account health: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("codex account %d not found", id)
+	}
+	return nil
 }

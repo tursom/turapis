@@ -31,9 +31,12 @@ func (r *Router) Route(ctx context.Context, req *models.UnifiedRequest) (*RouteR
 	return r.routeNonStream(ctx, req)
 }
 
-// StreamRouteResult 流式路由结果
+// StreamRouteResult 流式路由结果。
+// 当上游是 codex Responses API 时，RawBody 包含原始 SSE 响应体，
+// Gateway 应直接透传给客户端，不走 UnifiedStreamEvent 解析-重建。
 type StreamRouteResult struct {
 	Events       <-chan models.UnifiedStreamEvent
+	RawBody      io.ReadCloser // codex Responses API 原始 SSE 响应体
 	ProviderName string
 	QuotaBefore  string
 	QuotaAfter   string
