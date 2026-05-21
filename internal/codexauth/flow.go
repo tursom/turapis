@@ -45,10 +45,10 @@ func (f *AutoLoginFlow) redirectURI() string {
 
 // callbackServer 在本地监听 OAuth 授权码回调。
 type callbackServer struct {
-	codeCh  chan string
-	errCh   chan error
-	srv     *http.Server
-	state   string
+	codeCh chan string
+	errCh  chan error
+	srv    *http.Server
+	state  string
 }
 
 // startCallbackServer 在 127.0.0.1:port 启动一个 HTTP 服务器，
@@ -237,7 +237,7 @@ func exchangeCodeForTokens(ctx context.Context, code, verifier, redirectURI, tok
 
 // extractAccountIdentity 从 id_token JWT 中解析账号身份信息。
 // 注意：由于未接入 Auth0/OpenAI JWKS 验签，此函数仅做结构完整性校验
-//（alg 非 none、exp/iss/aud 匹配），不提供密码学信任保证。
+// （alg 非 none、exp/iss/aud 匹配），不提供密码学信任保证。
 // 调用方不应将返回的身份信息用于超出展示层的安全决策。
 func extractAccountIdentity(idToken string) (*AccountIdentity, error) {
 	parts := strings.Split(idToken, ".")
@@ -511,11 +511,12 @@ func (f *AutoLoginFlow) RunRegister(ctx context.Context) (*FlowResult, *EmailCre
 	return &FlowResult{Tokens: ts, Identity: identity}, ec, nil
 }
 
-// ──────────────────── 场景 B：已有邮箱登录 ────────────────────
+// ──────────────────── 场景 B：非阻塞登录 ────────────────────
 
-// RunLogin 启动登录流程（场景 B），返回授权 URL 并阻塞等待回调完成。
-// 调用方负责在浏览器中打开 authURL。
-func (f *AutoLoginFlow) RunLogin(ctx context.Context) (authURL string, result *FlowResult, err error) {
+// StartLogin 启动 OAuth 登录流程（场景 B），立即返回授权 URL，
+// 并返回一个 wait 函数，调用方在浏览器中打开 authURL 后应
+// 在后台 goroutine 中调用 wait(ctx) 等待 OAuth 回调并获取令牌。
+func (f *AutoLoginFlow) StartLogin(ctx context.Context) (authURL string, wait func(context.Context) (*FlowResult, error), err error) {
 	cfg := f.cfg
 
 	verifier, challenge, err := generatePKCE()
@@ -531,28 +532,32 @@ func (f *AutoLoginFlow) RunLogin(ctx context.Context) (authURL string, result *F
 	if err != nil {
 		return "", nil, fmt.Errorf("start callback server: %w", err)
 	}
-	defer cs.shutdown()
 
 	authURL = buildAuthorizeURL(challenge, state, f.redirectURI())
 
-	code, err := cs.wait(ctx)
-	if err != nil {
-		return authURL, nil, fmt.Errorf("wait for callback: %w", err)
+	wait = func(waitCtx context.Context) (*FlowResult, error) {
+		defer cs.shutdown()
+
+		code, wErr := cs.wait(waitCtx)
+		if wErr != nil {
+			return nil, fmt.Errorf("wait for callback: %w", wErr)
+		}
+
+		tr, wErr := exchangeCodeForTokens(waitCtx, code, verifier, f.redirectURI(), f.cfg.TokenURL)
+		if wErr != nil {
+			return nil, fmt.Errorf("exchange code for tokens: %w", wErr)
+		}
+
+		ts := tokenRespToTokenSet(tr)
+		identity, wErr := extractAccountIdentity(tr.IDToken)
+		if wErr != nil {
+			return nil, fmt.Errorf("extract identity: %w", wErr)
+		}
+		ts.AccountID = identity.AccountID
+		return &FlowResult{Tokens: ts, Identity: identity}, nil
 	}
 
-	tr, err := exchangeCodeForTokens(ctx, code, verifier, f.redirectURI(), f.cfg.TokenURL)
-	if err != nil {
-		return authURL, nil, fmt.Errorf("exchange code for tokens: %w", err)
-	}
-
-	ts := tokenRespToTokenSet(tr)
-	identity, err := extractAccountIdentity(tr.IDToken)
-	if err != nil {
-		return authURL, nil, fmt.Errorf("extract identity: %w", err)
-	}
-	ts.AccountID = identity.AccountID
-
-	return authURL, &FlowResult{Tokens: ts, Identity: identity}, nil
+	return authURL, wait, nil
 }
 
 // ──────────────────── 场景 B2/C：复用邮箱凭证重新登录 ────────────────────

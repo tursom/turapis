@@ -182,6 +182,31 @@ func (lm *LifecycleManager) Shutdown() {
 	lm.wg.Wait()
 }
 
+// RefreshAccount manually refreshes the token for a single account.
+func (lm *LifecycleManager) RefreshAccount(ctx context.Context, accountID int) error {
+	account, err := lm.reg.GetByID(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("refresh account: %w", err)
+	}
+	lm.refreshOneAccount(*account, ctx)
+	return nil
+}
+
+// HealthCheckAccount manually runs a health check for a single account.
+func (lm *LifecycleManager) HealthCheckAccount(ctx context.Context, accountID int) error {
+	account, err := lm.reg.GetByID(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("health check account: %w", err)
+	}
+	lm.healthCheckOneAccount(*account, ctx)
+	return nil
+}
+
+// Config returns the current CodexAuthConfig.
+func (lm *LifecycleManager) Config() CodexAuthConfig {
+	return lm.cfg
+}
+
 func (lm *LifecycleManager) autoRegisterRoutine() {
 	defer lm.wg.Done()
 
@@ -235,11 +260,11 @@ func (lm *LifecycleManager) runRefreshCycle() {
 	}
 
 	for _, account := range accounts {
-		lm.refreshOneAccount(account)
+		lm.refreshOneAccount(account, lm.ctx)
 	}
 }
 
-func (lm *LifecycleManager) refreshOneAccount(account config.CodexAccount) {
+func (lm *LifecycleManager) refreshOneAccount(account config.CodexAccount, ctx context.Context) {
 	if account.ProviderID == nil {
 		return
 	}
@@ -251,13 +276,13 @@ func (lm *LifecycleManager) refreshOneAccount(account config.CodexAccount) {
 			"account_id", account.ID,
 			"provider_id", providerID,
 			"error", err)
-		_ = lm.reg.UpdateStatus(lm.ctx, account.ID, "needs_login", err.Error())
-		lm.refreshWithFallback(account)
+		_ = lm.reg.UpdateStatus(ctx, account.ID, "needs_login", err.Error())
+		lm.refreshWithFallback(account, ctx)
 		return
 	}
 
-	_ = lm.reg.UpdateLastRefresh(lm.ctx, account.ID)
-	_ = lm.reg.UpdateStatus(lm.ctx, account.ID, "active", "")
+	_ = lm.reg.UpdateLastRefresh(ctx, account.ID)
+	_ = lm.reg.UpdateStatus(ctx, account.ID, "active", "")
 	slog.Info("refresh_token_success",
 		"account_id", account.ID,
 		"provider_id", providerID)
@@ -266,8 +291,8 @@ func (lm *LifecycleManager) refreshOneAccount(account config.CodexAccount) {
 // refreshWithFallback 在 Token 刷新失败后尝试回退到自动重登（场景 C）。
 // 先检查账号是否有存储的邮箱凭证；若有则调用 EmailCodeLogin 恢复 Token，
 // 若无则账号保持 needs_login 状态以等待人工干预。
-func (lm *LifecycleManager) refreshWithFallback(account config.CodexAccount) {
-	ec, err := lm.reg.GetEmailCredential(lm.ctx, account.ID)
+func (lm *LifecycleManager) refreshWithFallback(account config.CodexAccount, ctx context.Context) {
+	ec, err := lm.reg.GetEmailCredential(ctx, account.ID)
 	if err != nil || ec == nil {
 		slog.Error("refresh_fallback_no_credential",
 			"account_id", account.ID,
@@ -280,16 +305,16 @@ func (lm *LifecycleManager) refreshWithFallback(account config.CodexAccount) {
 		"account_id", account.ID,
 		"email", ec.Email)
 
-	if err := lm.reg.EmailCodeLogin(lm.ctx, ec); err != nil {
+	if err := lm.reg.EmailCodeLogin(ctx, ec); err != nil {
 		slog.Error("refresh_fallback_relogin_failed",
 			"account_id", account.ID,
 			"email", ec.Email,
 			"error", err)
-		_ = lm.reg.UpdateStatus(lm.ctx, account.ID, "error", err.Error())
+		_ = lm.reg.UpdateStatus(ctx, account.ID, "error", err.Error())
 		return
 	}
 
-	_ = lm.reg.UpdateLastRefresh(lm.ctx, account.ID)
+	_ = lm.reg.UpdateLastRefresh(ctx, account.ID)
 	slog.Info("refresh_fallback_relogin_success",
 		"account_id", account.ID,
 		"email", ec.Email)
@@ -319,11 +344,11 @@ func (lm *LifecycleManager) runHealthCheckCycle() {
 	}
 
 	for _, account := range accounts {
-		lm.healthCheckOneAccount(account)
+		lm.healthCheckOneAccount(account, lm.ctx)
 	}
 }
 
-func (lm *LifecycleManager) healthCheckOneAccount(account config.CodexAccount) {
+func (lm *LifecycleManager) healthCheckOneAccount(account config.CodexAccount, ctx context.Context) {
 	if account.ProviderID == nil {
 		return
 	}
@@ -340,12 +365,12 @@ func (lm *LifecycleManager) healthCheckOneAccount(account config.CodexAccount) {
 	if accessToken == "" {
 		slog.Error("health_check_no_access_token",
 			"account_id", account.ID)
-		_ = lm.reg.UpdateStatus(lm.ctx, account.ID, "needs_login",
+		_ = lm.reg.UpdateStatus(ctx, account.ID, "needs_login",
 			"no access token in credential")
 		return
 	}
 
-	result, err := lm.prober.Probe(lm.ctx, accessToken)
+	result, err := lm.prober.Probe(ctx, accessToken)
 	if err != nil {
 		slog.Error("health_check_probe_failed",
 			"account_id", account.ID,
@@ -353,12 +378,12 @@ func (lm *LifecycleManager) healthCheckOneAccount(account config.CodexAccount) {
 		return
 	}
 
-	_ = lm.reg.UpdateLastHealth(lm.ctx, account.ID)
+	_ = lm.reg.UpdateLastHealth(ctx, account.ID)
 
 	if result.StatusCode == 401 {
 		slog.Warn("health_check_401",
 			"account_id", account.ID)
-		lm.refreshWithFallback(account)
+		lm.refreshWithFallback(account, ctx)
 	}
 }
 

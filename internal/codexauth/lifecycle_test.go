@@ -223,7 +223,7 @@ func TestRefreshTokenSuccess(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
 	)
 
-	lm.refreshOneAccount(account)
+	lm.refreshOneAccount(account, context.Background())
 
 	updated, err := reg.GetByID(context.Background(), account.ID)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestRefreshTokenFailureFallbackRelogin(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
 	)
 
-	lm.refreshOneAccount(account)
+	lm.refreshOneAccount(account, context.Background())
 
 	updated, err := reg.GetByID(context.Background(), account.ID)
 	if err != nil {
@@ -319,7 +319,7 @@ func TestRefreshTokenFailureNoCredential(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
 	)
 
-	lm.refreshOneAccount(account)
+	lm.refreshOneAccount(account, context.Background())
 
 	updated, err := reg.GetByID(context.Background(), account.ID)
 	if err != nil {
@@ -357,7 +357,7 @@ func TestHealthCheckProbeSuccess(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, nil, prober,
 	)
 
-	lm.healthCheckOneAccount(account)
+	lm.healthCheckOneAccount(account, context.Background())
 
 	updated, err := reg.GetByID(context.Background(), account.ID)
 	if err != nil {
@@ -405,7 +405,7 @@ func TestHealthCheckProbe401TriggersRelogin(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, nil, prober,
 	)
 
-	lm.healthCheckOneAccount(account)
+	lm.healthCheckOneAccount(account, context.Background())
 
 	updated, err := reg.GetByID(context.Background(), account.ID)
 	if err != nil {
@@ -430,7 +430,7 @@ func TestHealthCheckNoProviderID(t *testing.T) {
 		DefaultCodexAuthConfig(), reg, store, nil, &healthProberMock{},
 	)
 
-	lm.healthCheckOneAccount(config.CodexAccount{ID: 999, ProviderID: nil})
+	lm.healthCheckOneAccount(config.CodexAccount{ID: 999, ProviderID: nil}, context.Background())
 }
 
 func TestExtractAccessTokenFromCredentialJSON(t *testing.T) {

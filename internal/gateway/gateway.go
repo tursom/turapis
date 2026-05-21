@@ -20,6 +20,7 @@ import (
 type Gateway struct {
 	router          *router.Router
 	adminRoutes     http.Handler
+	codexRoutes     http.Handler
 	store           *config.Store
 	accessLogWriter *accessLogWriter
 	staticDir       string
@@ -36,6 +37,13 @@ func New(r *router.Router, adminHandler http.Handler, store *config.Store, logSt
 		staticDir:       staticDir,
 		addr:            addr,
 	}
+}
+
+// SetCodexRoutes 设置 Codex 管理 API 的路由处理器。
+// 若 handler 非 nil，SetupRoutes 会自动将其挂载到 /admin/codex。
+// 若 handler 为 nil（默认），则/admin/codex 路由不会被注册。
+func (g *Gateway) SetCodexRoutes(handler http.Handler) {
+	g.codexRoutes = handler
 }
 
 // SetupRoutes 配置所有路由（AI API + Admin API 统一端口，PATH 区分）
@@ -61,6 +69,10 @@ func (g *Gateway) SetupRoutes() http.Handler {
 
 	// Admin 端点（路径隔离）
 	r.Mount("/admin", g.adminRoutes)
+
+	if g.codexRoutes != nil {
+		r.Mount("/admin/codex", g.codexRoutes)
+	}
 
 	// 健康检查
 	r.Get("/health", g.handleHealth)

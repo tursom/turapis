@@ -791,18 +791,9 @@ func TestRunRegister(t *testing.T) {
 
 // ──────────────────── 登录流程（场景 B） ────────────────────
 
-// TestRunLogin 集成测试：使用真实 HTTP 回调服务器（RunLogin 内部启动）
-// + httptest mock OAuth token 端点，验证 RunLogin 完整流程。
-//
-// 注意：RunLogin 不依赖 EmailProvider 或 BrowserClient，仅使用
-// CallbackPort 和 TokenURL。state 在函数内部随机生成，回调前不可见。
-// 本测试分两阶段：
-//  1. 通过 ?error=test 回调（绕过 state 校验）解阻塞 RunLogin 并捕获 authURL，
-//     解析出 state 后立即手动启动同 state 的回调服务器，调用 exchangeCodeForTokens
-//     模拟 OAuth 授权的令牌交换，最后验证令牌与身份。
-//  2. 验证 authURL 包含完整的 OAuth 参数。
-func TestRunLogin(t *testing.T) {
-	// ── 构造 mock JWT id_token ──
+// TestStartLogin 集成测试：验证 StartLogin 立即返回 authURL，
+// 且 wait 函数在 OAuth 回调到达后返回正确的令牌。
+func TestStartLogin(t *testing.T) {
 	exp := time.Now().Add(1 * time.Hour).Unix()
 	jwtHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	jwtPayload := base64.RawURLEncoding.EncodeToString([]byte(
@@ -811,7 +802,6 @@ func TestRunLogin(t *testing.T) {
 	jwtSig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
 	mockJWT := strings.Join([]string{jwtHeader, jwtPayload, jwtSig}, ".")
 
-	// ── mock OAuth token 端点 ──
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{
 			"access_token":  "mock_login_at",
@@ -835,45 +825,15 @@ func TestRunLogin(t *testing.T) {
 
 	flow := NewAutoLoginFlow(cfg)
 
-	// ── 阶段 1：通过 error 回调获取 authURL 并解析 state ──
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel1()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	type loginOut struct {
-		authURL string
-		result  *FlowResult
-		err     error
-	}
-	outCh := make(chan loginOut, 1)
-
-	go func() {
-		authURL, result, err := flow.RunLogin(ctx1)
-		outCh <- loginOut{authURL, result, err}
-	}()
-
-	// 等待回调服务器就绪
-	time.Sleep(100 * time.Millisecond)
-
-	// 发送 error 回调：error 参数在校验 state 之前触发，直接解阻塞 cs.wait
-	errResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/auth/callback?error=internal_test_hook", testPort))
+	authURL, wait, err := flow.StartLogin(ctx)
 	if err != nil {
-		t.Fatalf("send error callback: %v", err)
+		t.Fatalf("StartLogin: %v", err)
 	}
-	errResp.Body.Close()
-
-	// 收集 RunLogin 结果（authURL 作为命名返回值，即使 error 路径也会填充）
-	var authURL string
-	select {
-	case out := <-outCh:
-		if out.authURL == "" {
-			t.Fatal("authURL should not be empty (named return must be set before cs.wait)")
-		}
-		if out.err == nil {
-			t.Fatal("expected error from error callback path")
-		}
-		authURL = out.authURL
-	case <-ctx1.Done():
-		t.Fatal("timeout waiting for RunLogin error-path return")
+	if authURL == "" {
+		t.Fatal("authURL should not be empty")
 	}
 
 	// 解析 state
@@ -886,78 +846,68 @@ func TestRunLogin(t *testing.T) {
 		t.Fatal("state should not be empty in authURL")
 	}
 
-	// ── 阶段 1a：手动启动同 state 的回调服务器并交换令牌 ──
-	// 使用从 authURL 解析出的 state 启动一个新的回调服务器，
-	// 模拟 OAuth 授权回调，验证令牌交换与身份解析。
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
+	// 后台调用 wait
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer waitCancel()
 
-	cs, err := startCallbackServer(ctx2, testPort+1, capturedState)
-	if err != nil {
-		t.Fatalf("start manual callback server: %v", err)
-	}
-	defer cs.shutdown()
-
-	// 模拟 OAuth 重定向：发送正确 state + code 的回调
-	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/auth/callback?code=test_login_code&state=%s", testPort+1, url.QueryEscape(capturedState))
+	resultCh := make(chan *FlowResult, 1)
+	errCh := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		resp, err := http.Get(callbackURL)
-		if err != nil {
-			t.Errorf("send manual callback: %v", err)
+		result, wErr := wait(waitCtx)
+		if wErr != nil {
+			errCh <- wErr
 			return
 		}
-		resp.Body.Close()
+		resultCh <- result
 	}()
 
-	code, err := cs.wait(ctx2)
+	time.Sleep(100 * time.Millisecond)
+
+	// 模拟 OAuth 重定向：带上正确的 state 和授权码
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/auth/callback?code=test_login_code&state=%s", testPort, url.QueryEscape(capturedState))
+	resp, err := http.Get(callbackURL)
 	if err != nil {
-		t.Fatalf("wait for manual callback: %v", err)
+		t.Fatalf("send callback: %v", err)
 	}
-	if code != "test_login_code" {
-		t.Errorf("code = %s, want test_login_code", code)
+	resp.Body.Close()
+
+	// 收集 wait 结果
+	select {
+	case result := <-resultCh:
+		if result.Tokens == nil {
+			t.Fatal("Tokens should not be nil")
+		}
+		if result.Tokens.AccessToken != "mock_login_at" {
+			t.Errorf("AccessToken = %s, want mock_login_at", result.Tokens.AccessToken)
+		}
+		if result.Tokens.RefreshToken != "mock_login_rt" {
+			t.Errorf("RefreshToken = %s, want mock_login_rt", result.Tokens.RefreshToken)
+		}
+		if result.Tokens.IDToken != mockJWT {
+			t.Errorf("IDToken mismatch")
+		}
+		if result.Tokens.AccountID != "acc_login" {
+			t.Errorf("AccountID = %s, want acc_login", result.Tokens.AccountID)
+		}
+		if result.Identity.Email != "login@test.local" {
+			t.Errorf("Identity.Email = %s, want login@test.local", result.Identity.Email)
+		}
+		if result.Identity.AccountID != "acc_login" {
+			t.Errorf("Identity.AccountID = %s, want acc_login", result.Identity.AccountID)
+		}
+		if result.Identity.UserID != "user_lgn" {
+			t.Errorf("Identity.UserID = %s, want user_lgn", result.Identity.UserID)
+		}
+		if result.Identity.PlanType != "pro" {
+			t.Errorf("Identity.PlanType = %s, want pro", result.Identity.PlanType)
+		}
+	case wErr := <-errCh:
+		t.Fatalf("wait failed: %v", wErr)
+	case <-waitCtx.Done():
+		t.Fatal("timeout waiting for OAuth callback")
 	}
 
-	// 令牌交换
-	tr, err := exchangeCodeForTokens(ctx2, code, "", flow.redirectURI(), tokenServer.URL)
-	if err != nil {
-		t.Fatalf("exchange code for tokens: %v", err)
-	}
-
-	ts := tokenRespToTokenSet(tr)
-	identity, err := extractAccountIdentity(tr.IDToken)
-	if err != nil {
-		t.Fatalf("extract identity: %v", err)
-	}
-	ts.AccountID = identity.AccountID
-
-	// 验证结果
-	if ts.AccessToken != "mock_login_at" {
-		t.Errorf("AccessToken = %s, want mock_login_at", ts.AccessToken)
-	}
-	if ts.RefreshToken != "mock_login_rt" {
-		t.Errorf("RefreshToken = %s, want mock_login_rt", ts.RefreshToken)
-	}
-	if ts.IDToken != mockJWT {
-		t.Errorf("IDToken mismatch")
-	}
-	if ts.AccountID != "acc_login" {
-		t.Errorf("AccountID = %s, want acc_login", ts.AccountID)
-	}
-	if identity.Email != "login@test.local" {
-		t.Errorf("Identity.Email = %s, want login@test.local", identity.Email)
-	}
-	if identity.AccountID != "acc_login" {
-		t.Errorf("Identity.AccountID = %s, want acc_login", identity.AccountID)
-	}
-	if identity.UserID != "user_lgn" {
-		t.Errorf("Identity.UserID = %s, want user_lgn", identity.UserID)
-	}
-	if identity.PlanType != "pro" {
-		t.Errorf("Identity.PlanType = %s, want pro", identity.PlanType)
-	}
-
-	// ── 阶段 2：验证 authURL 参数 ──
+	// 验证 authURL 参数
 	params := parsedAuth.Query()
 	if params.Get("client_id") != codexClientID {
 		t.Errorf("client_id = %s, want %s", params.Get("client_id"), codexClientID)

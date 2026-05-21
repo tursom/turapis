@@ -107,3 +107,11 @@ type LoginHistoryEntry struct {
 	Method  string `json:"method"` // "auto_register" | "email_code_login"
 	Success bool   `json:"success"`
 }
+
+// LoginFlowRunner defines the StartLogin subset of AutoLoginFlow for CodexAdmin.
+// StartLogin starts the OAuth login flow and returns the authorization URL
+// immediately, along with a wait function that blocks until the OAuth callback
+// completes and tokens are exchanged.
+type LoginFlowRunner interface {
+	StartLogin(ctx context.Context) (authURL string, wait func(context.Context) (*FlowResult, error), err error)
+}

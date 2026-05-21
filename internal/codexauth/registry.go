@@ -99,6 +99,24 @@ func (r *AccountRegistry) SetEmailCredential(ctx context.Context, id int, cred *
 	return r.store.UpdateCodexAccount(account)
 }
 
+// RemoveEmailCredential 从账号的 metadata JSON 中移除 email_credential 键。
+func (r *AccountRegistry) RemoveEmailCredential(ctx context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	account, err := r.store.GetCodexAccount(id)
+	if err != nil {
+		return fmt.Errorf("remove email credential: %w", err)
+	}
+
+	account.Metadata, err = removeMetadataKey(account.Metadata, "email_credential")
+	if err != nil {
+		return fmt.Errorf("remove email credential: %w", err)
+	}
+
+	return r.store.UpdateCodexAccount(account)
+}
+
 // Remove 删除 Codex 账号及其关联的 Provider。
 // 若账号关联了 Provider，先删 Provider（best-effort，忽略错误），再删账号。
 // 不存在 ID 时返回错误（由底层 store 产生）。
@@ -309,6 +327,16 @@ func buildMetadata(raw string, key string, value json.RawMessage) (string, error
 	data, err := json.Marshal(m)
 	if err != nil {
 		return "", fmt.Errorf("build metadata: %w", err)
+	}
+	return string(data), nil
+}
+
+func removeMetadataKey(raw string, key string) (string, error) {
+	m := parseMetadata(raw)
+	delete(m, key)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("remove metadata key: %w", err)
 	}
 	return string(data), nil
 }
