@@ -9,6 +9,7 @@ import (
 
 	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/email"
+	"github.com/tursom/turapis/internal/sms"
 )
 
 // TokenSet 包含一次 OAuth PKCE 流程获取的完整令牌集。
@@ -34,6 +35,7 @@ type EmailCredential struct {
 	Email     string `json:"email"`
 	Provider  string `json:"provider"`
 	Token     string `json:"token"`
+	Password  string `json:"password,omitempty"`
 	UpdatedAt string `json:"updated_at"`
 }
 
@@ -47,9 +49,13 @@ type BrowserClient interface {
 	Click(ctx context.Context, selector string) error
 }
 
+// DefaultBrowserTimeout is the default timeout for browserless/chromedp operations.
+const DefaultBrowserTimeout = 120 * time.Second
+
 // FlowConfig 配置自动登录流程的各项参数。
 type FlowConfig struct {
 	EmailProvider  email.EmailProvider
+	SMSProvider    sms.SMSProvider
 	BrowserClient  BrowserClient
 	CallbackPort   int
 	PollInterval   time.Duration
@@ -58,6 +64,9 @@ type FlowConfig struct {
 	// TokenURL 覆盖默认的 OAuth token 端点 (https://auth.openai.com/oauth/token)。
 	// 为空时使用默认地址。主要用于测试。
 	TokenURL string
+	// ProgressFn is called between major registration steps.
+	// nil means no progress reporting.
+	ProgressFn func(step string)
 }
 
 // FlowResult 包含一次自动登录流程的完整结果，
@@ -93,6 +102,12 @@ type RegistryStore interface {
 	UpdateCodexAccountStatus(id int, status, errorMsg string) error
 	UpdateCodexAccountRefresh(id int) error
 	UpdateCodexAccountHealth(id int) error
+}
+
+// ConfigStore 提供配置读写接口，用于 codex auth 配置持久化到 global_settings 表。
+type ConfigStore interface {
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
 }
 
 // RegFlowRunner 定义 AccountRegistry 所需的 AutoLoginFlow 方法子集。

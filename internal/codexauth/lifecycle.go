@@ -27,6 +27,22 @@ type CodexAuthConfig struct {
 	MaxConcurrentLogins int
 	DefaultPassword     string
 	ProxyURL            string
+	BrowserURL           string // ws://browserless:3000/chromium，空字符串表示未配置
+	DefaultEmailProvider string                           // "tempmail_lol" | "mailondeck" | "mailondeck_browserless"
+	EmailProviders       map[string]EmailProviderSettings // per-provider config (API keys etc.)
+	DefaultSMSProvider   string                           // "smsactivate" | "5sim" | ""
+	SMSProviderSettings  *SMSProviderSettings             // sms platform config (API key etc.)
+}
+
+// EmailProviderSettings holds configuration for a specific email provider.
+type EmailProviderSettings struct {
+	APIKey string `json:"api_key,omitempty"`
+	Domain string `json:"domain,omitempty"`
+}
+
+// SMSProviderSettings holds configuration for the SMS verification provider.
+type SMSProviderSettings struct {
+	APIKey string `json:"api_key,omitempty"`
 }
 
 // DefaultCodexAuthConfig 返回合理的生产默认配置：
@@ -108,6 +124,7 @@ func (p *httpCodexHealthProber) Probe(ctx context.Context, accessToken string) (
 // 包括自动注册、Token 刷新和健康检查三个独立定时任务。
 // 通过 context.Context 控制所有 goroutine 的启动与停止。
 type LifecycleManager struct {
+	mu       sync.Mutex
 	cfg       CodexAuthConfig
 	reg       *AccountRegistry
 	store     RegistryStore
@@ -202,9 +219,56 @@ func (lm *LifecycleManager) HealthCheckAccount(ctx context.Context, accountID in
 	return nil
 }
 
-// Config returns the current CodexAuthConfig.
+// Config 返回当前 CodexAuthConfig 的副本。
 func (lm *LifecycleManager) Config() CodexAuthConfig {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
 	return lm.cfg
+}
+
+// UpdateConfig 更新 LifecycleManager 的运行时配置并热重载所有后台 goroutine。
+// 它会停止所有运行中的 goroutine，应用新配置，重建信号量通道，
+// 然后根据新配置重新启动相应的 goroutine。
+func (lm *LifecycleManager) UpdateConfig(cfg CodexAuthConfig) {
+	if cfg.AutoLoginInterval <= 0 {
+		cfg.AutoLoginInterval = 1 * time.Hour
+	}
+	if cfg.RefreshInterval <= 0 {
+		cfg.RefreshInterval = 7 * 24 * time.Hour
+	}
+	if cfg.HealthCheckInterval <= 0 {
+		cfg.HealthCheckInterval = 24 * time.Hour
+	}
+	if cfg.MaxConcurrentLogins <= 0 {
+		cfg.MaxConcurrentLogins = 1
+	}
+
+	// 停止所有运行中的 goroutine
+	if lm.cancel != nil {
+		lm.cancel()
+	}
+	lm.wg.Wait()
+
+	// 原子更新配置和信号量通道
+	lm.mu.Lock()
+	lm.cfg = cfg
+	lm.sem = make(chan struct{}, cfg.MaxConcurrentLogins)
+	lm.mu.Unlock()
+
+	// 根据新配置重启 goroutine
+	lm.ctx, lm.cancel = context.WithCancel(context.Background())
+	if cfg.AutoLoginEnabled {
+		lm.wg.Add(1)
+		go lm.autoRegisterRoutine()
+	}
+	if cfg.AutoRefreshEnabled {
+		lm.wg.Add(1)
+		go lm.refreshRoutine()
+	}
+	if cfg.AutoHealthEnabled {
+		lm.wg.Add(1)
+		go lm.healthCheckRoutine()
+	}
 }
 
 func (lm *LifecycleManager) autoRegisterRoutine() {
@@ -219,15 +283,24 @@ func (lm *LifecycleManager) autoRegisterRoutine() {
 			return
 		case <-ticker.C:
 			lm.sem <- struct{}{}
-			go func() {
-				defer func() { <-lm.sem }()
-				lm.runAutoRegister()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("auto_register_panic", "panic", r)
+				}
 			}()
+			defer func() { <-lm.sem }()
+			lm.runAutoRegister()
+		}()
 		}
 	}
 }
 
 func (lm *LifecycleManager) runAutoRegister() {
+	if lm.reg == nil {
+		slog.Error("auto_register_skip", "reason", "registry not initialized")
+		return
+	}
 	slog.Info("auto_register_start")
 	if err := lm.reg.Register(lm.ctx); err != nil {
 		slog.Error("auto_register_failed", "error", err)

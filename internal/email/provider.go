@@ -56,9 +56,9 @@ type InboxInfo struct {
 
 // EmailProviderConfig 保存创建 EmailProvider 实例的配置。
 type EmailProviderConfig struct {
-	// ProxyURL 是可选的代理 URL，格式为 http://host:port 或 socks5://host:port。
-	// 如果为空，则使用直连。
 	ProxyURL string
+	APIKey   string
+	Domain   string // custom domain for inbox creation
 }
 
 // buildTransport 创建一个带有可选代理支持的 http.Transport。
@@ -131,22 +131,73 @@ type EmailProvider interface {
 // verificationCodeRE 匹配 OpenAI/Codex 通常发送的 6 位数字验证码。
 var verificationCodeRE = regexp.MustCompile(`\b(\d{6})\b`)
 
+// verificationCodeStyledRE 匹配具有特定 HTML 样式的验证码
+//（OpenAI 邮件中验证码通常在灰底 #F3F3F3 的段落中）。
+var verificationCodeStyledRE = regexp.MustCompile(`background-color:\s*#F3F3F3[^>]*>[\s\S]*?(\d{6})[\s\S]*?</p>`)
+
+// verificationCodeContextRE 匹配上下文中的验证码，如 "Verification code: 123456"。
+var verificationCodeContextRE = regexp.MustCompile(`(?i)(?:verification\s*code|code\s*is|代码为|验证码)[:\s]*(\d{6})`)
+
+// verificationCodeTagRE 匹配 HTML 标签内的 6 位数字。
+var verificationCodeTagRE = regexp.MustCompile(`>\s*(\d{6})\s*<`)
+
 // verificationLinkRE 匹配 auth.openai.com 验证 URL。
 var verificationLinkRE = regexp.MustCompile(`https://auth\.openai\.com/verify[^\s<>"']*`)
 
+// knownFalseOTP is a known non-OTP 6-digit number that appears in OpenAI emails.
+const knownFalseOTP = "177010"
+
 // ExtractVerificationCode 从邮件中提取 6 位数字验证码。
-// 它在邮件正文和主题中搜索。
+// 采用多阶段提取策略（与 chatgpt2api 一致）：
+//  1. 先匹配灰底 #F3F3F3 样式区域内的验证码（最可靠）
+//  2. 再匹配 "Verification code" / "code is" / "验证码" 上下文
+//  3. 回退匹配 HTML 标签中的 6 位数字
+//  4. 排除已知误报码（177010）
 func ExtractVerificationCode(msg *EmailMessage) string {
 	if msg == nil {
 		return ""
 	}
 
+	// Build combined content for contextual matching
+	content := msg.Subject + "\n" + msg.Body + "\n" + msg.HTML
+
+	// Stage 1: Match styled OTP in gray background
+	if matches := verificationCodeStyledRE.FindStringSubmatch(msg.HTML); len(matches) >= 2 {
+		if code := matches[1]; code != "" && code != knownFalseOTP {
+			return code
+		}
+	}
+
+	// Stage 2: Match contextual patterns
+	if matches := verificationCodeContextRE.FindStringSubmatch(content); len(matches) >= 2 {
+		if code := matches[1]; code != "" && code != knownFalseOTP {
+			return code
+		}
+	}
+
+	// Stage 3: Find 6-digit numbers in HTML tags (fallback)
+	for _, matches := range verificationCodeTagRE.FindAllStringSubmatch(content, -1) {
+		if len(matches) >= 2 {
+			code := matches[1]
+			if code != "" && code != knownFalseOTP {
+				return code
+			}
+		}
+	}
+
+	// Stage 4: Generic 6-digit match (last resort)
+	return extractGenericCode(msg)
+}
+
+// extractGenericCode is the legacy fallback for environments that don't
+// match the standard OpenAI email format.
+func extractGenericCode(msg *EmailMessage) string {
 	for _, source := range []string{msg.Body, msg.HTML, msg.Subject} {
 		if source == "" {
 			continue
 		}
 		matches := verificationCodeRE.FindStringSubmatch(source)
-		if len(matches) >= 2 {
+		if len(matches) >= 2 && matches[1] != knownFalseOTP {
 			return matches[1]
 		}
 	}
@@ -188,24 +239,23 @@ func WaitForEmailPolling(ctx context.Context, provider EmailProvider, inbox *Inb
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// 在启动定时器之前先做一次即时检查。
+	// 在启动定时器之前先做一次即时检查（限流等临时错误非致命，继续轮询）
 	msgs, err := provider.GetMessages(ctx, inbox)
-	if err != nil {
-		return nil, fmt.Errorf("initial fetch: %w", err)
-	}
-	for i := range msgs {
-		if predicate(&msgs[i]) {
-			return &msgs[i], nil
+	if err == nil {
+		for i := range msgs {
+			if predicate(&msgs[i]) {
+				return &msgs[i], nil
+			}
 		}
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled while waiting for email: %w", ctx.Err())
+			return nil, fmt.Errorf("context cancelled while waiting for email to %s at %s: %w", inbox.Address, inbox.Provider, ctx.Err())
 		case <-ticker.C:
 			if time.Now().After(deadline) {
-				return nil, fmt.Errorf("timed out waiting for email after %v", timeout)
+				return nil, fmt.Errorf("timed out waiting for email to %s at %s after %v", inbox.Address, inbox.Provider, timeout)
 			}
 
 			msgs, err := provider.GetMessages(ctx, inbox)

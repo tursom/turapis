@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
-import { login as apiLogin, logout as apiLogout, fetchStatus } from '../api/client'
+import { login as apiLogin, logout as apiLogout, fetchStatus, fetchMe } from '../api/client'
 
 interface AuthContextType {
   isAuthenticated: boolean
@@ -20,7 +20,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     fetchStatus()
-      .then(() => setIsAuthenticated(true))
+      .then(async () => {
+        setIsAuthenticated(true)
+        try {
+          const user = await fetchMe()
+          setUsername(user.username)
+          setRole(user.role)
+        } catch {
+          setIsAuthenticated(true)
+        }
+      })
       .catch(() => setIsAuthenticated(false))
       .finally(() => setIsLoading(false))
   }, [])

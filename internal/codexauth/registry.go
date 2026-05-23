@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -233,6 +235,83 @@ func (r *AccountRegistry) Register(ctx context.Context) error {
 	return nil
 }
 
+// HTTPRegister executes the full registration flow using HTTP API calls
+// (chatgpt2api approach, no browser required) and persists results.
+func (r *AccountRegistry) HTTPRegister(ctx context.Context, proxyURL string) error {
+	flow, ok := r.flow.(*AutoLoginFlow)
+	if !ok {
+		return fmt.Errorf("http_register: flow does not support HTTP registration")
+	}
+	flowResult, emailCred, err := flow.HTTPRunRegister(ctx, proxyURL)
+	if err != nil {
+		if emailCred != nil {
+			saveErr := savePendingCredential(emailCred)
+			if saveErr != nil {
+				slog.Warn("save_pending_credential_failed", "email", emailCred.Email, "error", saveErr)
+			} else {
+				slog.Info("pending_credential_saved", "email", emailCred.Email, "provider", emailCred.Provider)
+			}
+		}
+		return fmt.Errorf("register: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, err := r.store.GetCodexAccountByAccountID(flowResult.Identity.AccountID); err == nil {
+		return fmt.Errorf("register: codex account %q already exists", flowResult.Identity.AccountID)
+	}
+
+	credJSON, err := TokenSetToCredentialJSON(flowResult.Tokens)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	provider, _, err := r.store.CreateProviderFromSite(4, flowResult.Identity.Email, "", credJSON)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	providerID := provider.ID
+	account := &config.CodexAccount{
+		ProviderID: &providerID,
+		Email:      flowResult.Identity.Email,
+		AccountID:  flowResult.Identity.AccountID,
+		UserID:     flowResult.Identity.UserID,
+		PlanType:   flowResult.Identity.PlanType,
+		Status:     "active",
+	}
+
+	if err := r.store.CreateCodexAccount(account); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	metaWithHistory, err := appendLoginHistory("{}", LoginHistoryEntry{
+		Time:    time.Now().UTC().Format(time.RFC3339),
+		Method:  "auto_register",
+		Success: true,
+	})
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	ecJSON, err := EmailCredentialToJSON(emailCred)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	account.Metadata, err = buildMetadata(metaWithHistory, "email_credential", ecJSON)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	if err := r.store.UpdateCodexAccount(account); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	return nil
+}
+
 // EmailCodeLogin 使用已有邮箱凭证完成重新登录（场景 B2/C）并更新持久化数据。
 //
 // 流程分为两个阶段：
@@ -246,6 +325,69 @@ func (r *AccountRegistry) Register(ctx context.Context) error {
 //
 // Token 合并策略：仅替换 access_token、refresh_token、id_token、expires_at，
 // 保留已存储的 client_id 及 provider 凭证中的其他字段（如 quota）。
+
+// SaveReloginResult updates an existing account's provider tokens with a FlowResult
+// obtained from relogin. It finds the account by AccountID from the FlowResult,
+// updates the access_token/refresh_token/id_token/expires_at, and records login history.
+func (r *AccountRegistry) SaveReloginResult(ctx context.Context, result *FlowResult) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	account, err := r.store.GetCodexAccountByAccountID(result.Identity.AccountID)
+	if err != nil {
+		return fmt.Errorf("save relogin result: %w", err)
+	}
+
+	apiKey, err := r.store.GetProviderAPIKey(*account.ProviderID)
+	if err != nil {
+		return fmt.Errorf("save relogin result: %w", err)
+	}
+
+	var credMap map[string]any
+	if err := json.Unmarshal([]byte(apiKey), &credMap); err != nil {
+		return fmt.Errorf("save relogin result: parse credential: %w", err)
+	}
+
+	tokens, _ := credMap["tokens"].(map[string]any)
+	if tokens == nil {
+		tokens = make(map[string]any)
+		credMap["tokens"] = tokens
+	}
+	tokens["access_token"] = result.Tokens.AccessToken
+	tokens["refresh_token"] = result.Tokens.RefreshToken
+	tokens["id_token"] = result.Tokens.IDToken
+	tokens["expires_at"] = result.Tokens.ExpiresAt
+
+	updatedCred, err := json.Marshal(credMap)
+	if err != nil {
+		return fmt.Errorf("save relogin result: marshal credential: %w", err)
+	}
+
+	if err := r.store.UpdateProviderAPIKey(*account.ProviderID, string(updatedCred)); err != nil {
+		return fmt.Errorf("save relogin result: %w", err)
+	}
+
+	account.LastLogin = time.Now().UTC().Format(time.RFC3339)
+	account.Status = "active"
+	account.ErrorMsg = ""
+
+	account.Metadata, err = appendLoginHistory(account.Metadata, LoginHistoryEntry{
+		Time:    time.Now().UTC().Format(time.RFC3339),
+		Method:  "http_codex_relogin",
+		Success: true,
+	})
+	if err != nil {
+		return fmt.Errorf("save relogin result: %w", err)
+	}
+
+	if err := r.store.UpdateCodexAccount(account); err != nil {
+		return fmt.Errorf("save relogin result: %w", err)
+	}
+
+	return nil
+}
+
+// EmailCodeLogin 使用存储的邮箱凭证通过浏览器执行重登录，更新已有账号的 token。
 func (r *AccountRegistry) EmailCodeLogin(ctx context.Context, emailCred *EmailCredential) error {
 	flowResult, err := r.flow.RunRelogin(ctx, emailCred)
 	if err != nil {
@@ -362,4 +504,26 @@ func appendLoginHistory(raw string, entry LoginHistoryEntry) (string, error) {
 		return "", fmt.Errorf("marshal metadata: %w", err)
 	}
 	return string(data), nil
+}
+
+const pendingCredentialsFile = "/data/pending_credentials.json"
+
+func savePendingCredential(ec *EmailCredential) error {
+	var entries []*EmailCredential
+
+	data, err := os.ReadFile(pendingCredentialsFile)
+	if err == nil {
+		json.Unmarshal(data, &entries)
+	}
+	if entries == nil {
+		entries = make([]*EmailCredential, 0)
+	}
+
+	entries = append(entries, ec)
+
+	newData, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return os.WriteFile(pendingCredentialsFile, newData, 0644)
 }

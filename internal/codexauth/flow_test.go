@@ -69,7 +69,7 @@ func TestBuildAuthorizeURL(t *testing.T) {
 	if params.Get("response_type") != "code" {
 		t.Errorf("response_type = %s, want code", params.Get("response_type"))
 	}
-	if params.Get("scope") != "openid profile email offline_access" {
+	if params.Get("scope") != "openid profile email offline_access api.connectors.read api.connectors.invoke" {
 		t.Errorf("scope = %s", params.Get("scope"))
 	}
 	if params.Get("state") != state {
@@ -486,7 +486,7 @@ func TestRunRelogin(t *testing.T) {
 
 	var callbackState string
 	for _, u := range capturedURLs {
-		if strings.Contains(u, "auth.openai.com/authorize") {
+		if strings.Contains(u, "auth.openai.com/oauth/authorize") {
 			parsed, _ := url.Parse(u)
 			callbackState = parsed.Query().Get("state")
 			break
@@ -581,7 +581,7 @@ func TestRunRelogin_MissingCode(t *testing.T) {
 
 	var callbackState string
 	for _, u := range capturedURLs {
-		if strings.Contains(u, "auth.openai.com/authorize") {
+		if strings.Contains(u, "auth.openai.com/oauth/authorize") {
 			parsed, _ := url.Parse(u)
 			callbackState = parsed.Query().Get("state")
 			break
@@ -712,7 +712,7 @@ func TestRunRegister(t *testing.T) {
 
 	var callbackState string
 	for _, u := range capturedURLs {
-		if strings.Contains(u, "auth.openai.com/authorize") {
+		if strings.Contains(u, "auth.openai.com/oauth/authorize") {
 			parsed, _ := url.Parse(u)
 			callbackState = parsed.Query().Get("state")
 			break
@@ -919,7 +919,7 @@ func TestStartLogin(t *testing.T) {
 	if params.Get("response_type") != "code" {
 		t.Errorf("response_type = %s, want code", params.Get("response_type"))
 	}
-	if params.Get("scope") != "openid profile email offline_access" {
+	if params.Get("scope") != "openid profile email offline_access api.connectors.read api.connectors.invoke" {
 		t.Errorf("scope = %s", params.Get("scope"))
 	}
 	if params.Get("code_challenge") == "" {

@@ -20,6 +20,7 @@ import ApiKeys from './pages/ApiKeys'
 import Sites from './pages/Sites'
 import AccessLogs from './pages/AccessLogs'
 import Users from './pages/Users'
+import CodexAccounts from './pages/CodexAccounts'
 
 const { Sider, Content } = Layout
 
@@ -31,6 +32,7 @@ const menuItems = [
   { key: '/sites', icon: <GlobalOutlined />, label: '站点管理' },
   { key: '/access-logs', icon: <FileTextOutlined />, label: '访问日志' },
   { key: '/users', icon: <UserOutlined />, label: '用户管理' },
+  { key: '/codex-accounts', icon: <ApiOutlined />, label: 'Codex 账号' },
 ]
 
 function ProtectedLayout() {
@@ -128,6 +130,7 @@ export default function App() {
               <Route path="/sites" element={<Sites />} />
               <Route path="/access-logs" element={<AccessLogs />} />
               <Route path="/users" element={<Users />} />
+              <Route path="/codex-accounts" element={<CodexAccounts />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

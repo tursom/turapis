@@ -20,10 +20,10 @@ var _ EmailProvider = (*TempmailLOL)(nil)
 type TempmailLOL struct {
 	baseURL string
 	client  *http.Client
+	apiKey  string
+	domain  string
 }
 
-// NewTempmailLOL 使用给定的配置创建一个新的 TempmailLOL 提供商。
-// 如果 config.ProxyURL 已设置，HTTP 客户端将通过代理路由流量。
 func NewTempmailLOL(cfg EmailProviderConfig) *TempmailLOL {
 	return &TempmailLOL{
 		baseURL: "https://api.tempmail.lol",
@@ -31,6 +31,8 @@ func NewTempmailLOL(cfg EmailProviderConfig) *TempmailLOL {
 			Transport: buildTransport(cfg.ProxyURL),
 			Timeout:   30 * time.Second,
 		},
+		apiKey: cfg.APIKey,
+		domain: cfg.Domain,
 	}
 }
 
@@ -40,14 +42,26 @@ func (p *TempmailLOL) Name() string { return "tempmail_lol" }
 // SupportsReuse 返回 false — tempmail.lol 不支持复用邮箱。
 func (p *TempmailLOL) SupportsReuse() bool { return false }
 
+func (p *TempmailLOL) setAuth(req *http.Request) {
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+}
+
 // CreateInbox 通过 POST /v2/inbox/create 创建一个新的临时邮箱。
 func (p *TempmailLOL) CreateInbox(ctx context.Context) (*InboxInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/inbox/create", nil)
+	var body io.Reader
+	if p.domain != "" {
+		payload, _ := json.Marshal(map[string]string{"domain": p.domain})
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/inbox/create", body)
 	if err != nil {
 		return nil, fmt.Errorf("tempmail.lol create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	p.setAuth(req)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -92,6 +106,7 @@ func (p *TempmailLOL) GetMessages(ctx context.Context, inbox *InboxInfo) ([]Emai
 		return nil, fmt.Errorf("tempmail.lol get messages request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	p.setAuth(req)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -177,6 +192,7 @@ func (p *TempmailLOL) CreateInboxWithPrefix(ctx context.Context, prefix string) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	p.setAuth(req)
 
 	resp, err := p.client.Do(req)
 	if err != nil {

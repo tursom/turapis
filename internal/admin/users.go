@@ -61,7 +61,7 @@ func (a *Admin) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) getUser(w http.ResponseWriter, r *http.Request) {
 	param := chi.URLParam(r, "id")
-	if param == "me" {
+	if param == "me" || param == "" {
 		u := models.SessionUserFromContext(r.Context())
 		if u == nil {
 			writeError(w, http.StatusUnauthorized, "not authenticated")

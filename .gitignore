@@ -3,7 +3,8 @@
 .claude/
 
 # Build output
-turapis
+/turapis
+/bin
 *.exe
 *.test
 
@@ -30,3 +31,5 @@ web/dist/
 
 .codex
 .sisyphus
+
+/build
