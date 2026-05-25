@@ -157,4 +157,19 @@ export interface LoginResponse {
   role: 'admin' | 'user'
 }
 
+export interface BucketStat {
+  start: string
+  end: string
+  count_with_failover: number
+  count_without_failover: number
+  tokens_in_with_failover: number
+  tokens_in_without_failover: number
+  tokens_out_with_failover: number
+  tokens_out_without_failover: number
+}
+
+export interface AccessLogStatsResponse {
+  buckets: BucketStat[]
+}
+
 

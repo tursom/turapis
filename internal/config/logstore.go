@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -527,11 +528,120 @@ func (s *LogStore) MigrateFromSQLite(sqlDB *sqlx.DB) (int, error) {
 	return migrated, nil
 }
 
+func (s *LogStore) Stats(startAt, endAt string, intervalMinutes int) ([]BucketStat, error) {
+	if intervalMinutes <= 0 {
+		return nil, fmt.Errorf("interval must be positive")
+	}
+
+	start, err := normalizeTimeArg(startAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse start_at: %w", err)
+	}
+	end, err := normalizeTimeArg(endAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse end_at: %w", err)
+	}
+	if !start.Before(end) {
+		return nil, fmt.Errorf("start_at must be before end_at")
+	}
+
+	interval := time.Duration(intervalMinutes) * time.Minute
+	duration := end.Sub(start)
+	numBuckets := int(math.Ceil(float64(duration) / float64(interval)))
+
+	buckets := make([]BucketStat, numBuckets)
+	for i := range buckets {
+		bs := start.Add(time.Duration(i) * interval)
+		be := bs.Add(interval)
+		if be.After(end) {
+			be = end
+		}
+		buckets[i].Start = bs.Format(time.RFC3339)
+		buckets[i].End = be.Format(time.RFC3339)
+	}
+
+	lower, upper, err := s.queryBounds(startAt, endAt)
+	if err != nil {
+		return nil, err
+	}
+
+	iter, _ := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: lower,
+		UpperBound: upper,
+	})
+	defer iter.Close()
+
+	const maxScan = 10000
+	scanned := 0
+
+	for iter.SeekLT(upper); iter.Valid() && scanned < maxScan; iter.Prev() {
+		var log AccessLog
+		if err := json.Unmarshal(iter.Value(), &log); err != nil {
+			continue
+		}
+
+		logTs, err := time.Parse(time.RFC3339, log.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		hasFailover := false
+		if log.AttemptsJSON != "" && log.AttemptsJSON != "null" {
+			var attempts []AttemptRecord
+			if err := json.Unmarshal([]byte(log.AttemptsJSON), &attempts); err == nil {
+				if len(attempts) > 1 {
+					hasFailover = true
+				} else {
+					for _, a := range attempts {
+						if a.AttemptNum > 1 {
+							hasFailover = true
+							break
+						}
+					}
+				}
+			}
+		}
+
+		bucketIdx := int(logTs.Sub(start).Minutes()) / intervalMinutes
+		if bucketIdx < 0 || bucketIdx >= numBuckets {
+			continue
+		}
+
+		if hasFailover {
+			buckets[bucketIdx].CountWithFailover++
+			buckets[bucketIdx].TokensInWithFailover += log.TokensIn
+			buckets[bucketIdx].TokensOutWithFailover += log.TokensOut
+		} else {
+			buckets[bucketIdx].CountWithoutFailover++
+			buckets[bucketIdx].TokensInWithoutFailover += log.TokensIn
+			buckets[bucketIdx].TokensOutWithoutFailover += log.TokensOut
+		}
+
+		scanned++
+	}
+
+	return buckets, nil
+}
+
 // ── helpers ────────────────────────────────────────────────────────
+
+// normalizeTimeArg converts HTML datetime-local format (YYYY-MM-DDTHH:MM)
+// to RFC3339 by appending ":00Z" when needed, then parses.
+func normalizeTimeArg(raw string) (time.Time, error) {
+	// Fast path: already RFC3339 (contains timezone suffix or seconds)
+	if len(raw) > 19 {
+		return time.Parse(time.RFC3339, raw)
+	}
+	// datetime-local format: "2006-01-02T15:04" → append ":00Z"
+	if len(raw) == 16 && raw[10] == 'T' {
+		return time.Parse(time.RFC3339, raw+":00Z")
+	}
+	return time.Parse(time.RFC3339, raw)
+}
 
 func (s *LogStore) queryBounds(startAt, endAt string) (lower, upper []byte, err error) {
 	if startAt != "" {
-		ts, e := time.Parse(time.RFC3339, startAt)
+		ts, e := normalizeTimeArg(startAt)
 		if e != nil {
 			return nil, nil, fmt.Errorf("parse start_at: %w", e)
 		}
@@ -541,7 +651,7 @@ func (s *LogStore) queryBounds(startAt, endAt string) (lower, upper []byte, err 
 	}
 
 	if endAt != "" {
-		ts, e := time.Parse(time.RFC3339, endAt)
+		ts, e := normalizeTimeArg(endAt)
 		if e != nil {
 			return nil, nil, fmt.Errorf("parse end_at: %w", e)
 		}

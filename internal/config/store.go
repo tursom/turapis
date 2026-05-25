@@ -1329,6 +1329,18 @@ type AccessLogQuery struct {
 	PerPage  int    `json:"per_page"`
 }
 
+// BucketStat 时间桶访问日志统计
+type BucketStat struct {
+	Start                    string `json:"start"`
+	End                      string `json:"end"`
+	CountWithFailover        int    `json:"count_with_failover"`
+	CountWithoutFailover     int    `json:"count_without_failover"`
+	TokensInWithFailover     int    `json:"tokens_in_with_failover"`
+	TokensInWithoutFailover  int    `json:"tokens_in_without_failover"`
+	TokensOutWithFailover    int    `json:"tokens_out_with_failover"`
+	TokensOutWithoutFailover int    `json:"tokens_out_without_failover"`
+}
+
 // InsertAccessLog 插入访问日志（委托给 LogStore，如未配置则跳过）
 func (s *Store) InsertAccessLog(log *AccessLog) error {
 	if s.LogStore == nil {
@@ -1358,6 +1370,13 @@ func (s *Store) GetAccessLog(id int) (*AccessLog, error) {
 		return nil, fmt.Errorf("access log %d not found", id)
 	}
 	return s.LogStore.Get(id)
+}
+
+func (s *Store) GetAccessLogStats(startAt, endAt string, intervalMinutes int) ([]BucketStat, error) {
+	if s.LogStore == nil {
+		return []BucketStat{}, nil
+	}
+	return s.LogStore.Stats(startAt, endAt, intervalMinutes)
 }
 
 // StartCleanup 启动定时清理任务

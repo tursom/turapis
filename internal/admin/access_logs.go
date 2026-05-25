@@ -24,6 +24,36 @@ func (a *Admin) getAccessLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, log)
 }
 
+func (a *Admin) accessLogStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	if from == "" || to == "" {
+		writeError(w, http.StatusBadRequest, "from and to query params are required")
+		return
+	}
+
+	interval := 10
+	if v := q.Get("interval"); v != "" {
+		i, err := strconv.Atoi(v)
+		if err != nil || i <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid interval")
+			return
+		}
+		interval = i
+	}
+
+	stats, err := a.store.GetAccessLogStats(from, to, interval)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"buckets": stats,
+	})
+}
+
 func (a *Admin) listAccessLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := config.AccessLogQuery{}

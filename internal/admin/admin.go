@@ -41,6 +41,7 @@ func (a *Admin) Routes() http.Handler {
 		r.Get("/status", a.getStatus)
 		r.Get("/api-keys", a.listAPIKeys)
 		r.Get("/access-logs", a.listAccessLogs)
+		r.Get("/access-logs/stats", a.accessLogStats)
 		r.Get("/access-logs/{id}", a.getAccessLog)
 		r.Get("/sites", a.listSites)
 		r.Get("/sites/{id}", a.getSite)
