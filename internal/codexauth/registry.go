@@ -348,11 +348,7 @@ func (r *AccountRegistry) SaveReloginResult(ctx context.Context, result *FlowRes
 		return fmt.Errorf("save relogin result: parse credential: %w", err)
 	}
 
-	tokens, _ := credMap["tokens"].(map[string]any)
-	if tokens == nil {
-		tokens = make(map[string]any)
-		credMap["tokens"] = tokens
-	}
+	tokens, _ := getOrCreateTokensMap(credMap)
 	tokens["access_token"] = result.Tokens.AccessToken
 	tokens["refresh_token"] = result.Tokens.RefreshToken
 	tokens["id_token"] = result.Tokens.IDToken
@@ -412,11 +408,7 @@ func (r *AccountRegistry) EmailCodeLogin(ctx context.Context, emailCred *EmailCr
 		return fmt.Errorf("email code login: parse credential: %w", err)
 	}
 
-	tokens, _ := credMap["tokens"].(map[string]any)
-	if tokens == nil {
-		tokens = make(map[string]any)
-		credMap["tokens"] = tokens
-	}
+	tokens, _ := getOrCreateTokensMap(credMap)
 	tokens["access_token"] = flowResult.Tokens.AccessToken
 	tokens["refresh_token"] = flowResult.Tokens.RefreshToken
 	tokens["id_token"] = flowResult.Tokens.IDToken
@@ -526,4 +518,28 @@ func savePendingCredential(ec *EmailCredential) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	return os.WriteFile(pendingCredentialsFile, newData, 0644)
+}
+
+// getOrCreateTokensMap 从 credential JSON 中解析 tokens map，兼容新旧格式。
+// 优先 credential.tokens（新格式），其次 tokens（旧格式）。
+// 找不到时创建新 tokens map，挂在 credential.tokens 下（统一用新格式）。
+func getOrCreateTokensMap(credMap map[string]any) (tokens map[string]any, container map[string]any) {
+	// 新格式优先
+	if cr, ok := credMap["credential"].(map[string]any); ok {
+		if t, ok := cr["tokens"].(map[string]any); ok {
+			return t, cr
+		}
+		// credential 存在但无 tokens，创建
+		t := make(map[string]any)
+		cr["tokens"] = t
+		return t, cr
+	}
+	// 旧格式兼容
+	if t, ok := credMap["tokens"].(map[string]any); ok {
+		return t, credMap
+	}
+	// 都没有，创建新格式
+	t := make(map[string]any)
+	credMap["credential"] = map[string]any{"tokens": t}
+	return t, credMap["credential"].(map[string]any)
 }

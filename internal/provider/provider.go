@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -78,6 +79,14 @@ type Provider interface {
 	ListModels(ctx context.Context) ([]models.ModelInfo, error)
 	Protocol() models.ProtocolType
 	SupportsTool(name string) bool
+	// SetAPIKey 热更新 API Key（用于 OAuth token 刷新后同步更新内存中的 Provider）。
+	SetAPIKey(key string)
+}
+
+// ProviderKeyUpdater 定义在 OAuth token 刷新后更新内存中 Provider API key 的接口。
+// *Registry 实现此接口。
+type ProviderKeyUpdater interface {
+	SetProviderAPIKey(providerID int, accessToken string) error
 }
 
 type Registry struct {
@@ -116,4 +125,15 @@ func (r *Registry) Delete(id int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.providers, id)
+}
+
+func (r *Registry) SetProviderAPIKey(providerID int, accessToken string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providers[providerID]
+	if !ok {
+		return fmt.Errorf("provider %d not found in registry", providerID)
+	}
+	p.SetAPIKey(accessToken)
+	return nil
 }

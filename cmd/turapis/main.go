@@ -64,13 +64,8 @@ func main() {
 		p := &dbProviders[i]
 		apiKey := p.APIKey
 		if p.AuthMode == "oauth" {
-			var creds map[string]interface{}
-			if err := json.Unmarshal([]byte(p.APIKey), &creds); err == nil {
-				if tokens, ok := creds["tokens"].(map[string]interface{}); ok {
-					if at, ok := tokens["access_token"].(string); ok {
-						apiKey = at
-					}
-				}
+			if at := provider.ExtractOAuthAccessToken(p.APIKey); at != "" {
+				apiKey = at
 			}
 		}
 		var supportedTools []string
@@ -146,7 +141,7 @@ func main() {
 	}
 
 	prober := codexauth.NewHTTPCodexHealthProber(nil)
-	lm := codexauth.NewLifecycleManager(lmCfg, reg, store, nil, prober)
+	lm := codexauth.NewLifecycleManager(lmCfg, reg, store, registry, nil, prober)
 	lm.Start(context.Background())
 	defer lm.Shutdown()
 

@@ -60,6 +60,7 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 func (p *OpenAIProvider) Name() string                  { return p.name }
 func (p *OpenAIProvider) ID() int                    { return p.id }
 func (p *OpenAIProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
+func (p *OpenAIProvider) SetAPIKey(key string)       { p.apiKey = key }
 func (p *OpenAIProvider) SupportsTool(name string) bool {
 	if p.supportedTools == nil {
 		return true

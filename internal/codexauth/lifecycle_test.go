@@ -57,7 +57,7 @@ func TestNewLifecycleManager_Defaults(t *testing.T) {
 	reg := NewRegistry(store, &mockRegFlowRunner{})
 	prober := &healthProberMock{}
 
-	lm := NewLifecycleManager(CodexAuthConfig{}, reg, store, nil, prober)
+	lm := NewLifecycleManager(CodexAuthConfig{}, reg, store, nil, nil, prober)
 
 	if lm.cfg.AutoLoginInterval != 1*time.Hour {
 		t.Errorf("AutoLoginInterval = %v, want 1h", lm.cfg.AutoLoginInterval)
@@ -92,7 +92,7 @@ func TestNewLifecycleManager_CustomValues(t *testing.T) {
 		ProxyURL:            "http://proxy:8080",
 	}
 
-	lm := NewLifecycleManager(cfg, reg, store, nil, prober)
+	lm := NewLifecycleManager(cfg, reg, store, nil, nil, prober)
 
 	if lm.cfg.AutoLoginInterval != 30*time.Minute {
 		t.Errorf("AutoLoginInterval = %v", lm.cfg.AutoLoginInterval)
@@ -125,7 +125,7 @@ func TestLifecycleStartShutdown(t *testing.T) {
 		MaxConcurrentLogins: 1,
 	}
 
-	lm := NewLifecycleManager(cfg, reg, store, nil, prober)
+	lm := NewLifecycleManager(cfg, reg, store, nil, nil, prober)
 	lm.Start(context.Background())
 
 	time.Sleep(50 * time.Millisecond)
@@ -154,7 +154,7 @@ func TestAutoRegisterFires(t *testing.T) {
 		MaxConcurrentLogins: 1,
 	}
 
-	lm := NewLifecycleManager(cfg, reg, store, nil, &healthProberMock{})
+	lm := NewLifecycleManager(cfg, reg, store, nil, nil, &healthProberMock{})
 	lm.Start(context.Background())
 
 	time.Sleep(60 * time.Millisecond)
@@ -175,16 +175,13 @@ func TestAutoRegisterError(t *testing.T) {
 	}
 	reg := NewRegistry(store, flowMock)
 
-	lm := NewLifecycleManager(
-		CodexAuthConfig{
+	lm := NewLifecycleManager(CodexAuthConfig{
 			AutoLoginEnabled:   true,
 			AutoRefreshEnabled:  false,
 			AutoHealthEnabled:   false,
 			AutoLoginInterval:   10 * time.Millisecond,
 			MaxConcurrentLogins: 1,
-		},
-		reg, store, nil, &healthProberMock{},
-	)
+		}, reg, store, nil, nil, &healthProberMock{})
 
 	lm.Start(context.Background())
 	time.Sleep(60 * time.Millisecond)
@@ -219,9 +216,7 @@ func TestRefreshTokenSuccess(t *testing.T) {
 	}
 
 	refresher := &tokenRefresherMock{}
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, refresher, &healthProberMock{})
 
 	lm.refreshOneAccount(account, context.Background())
 
@@ -261,9 +256,7 @@ func TestRefreshTokenFailureFallbackRelogin(t *testing.T) {
 	account := accounts[0]
 
 	refresher := &tokenRefresherMock{err: errors.New("refresh failed")}
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, refresher, &healthProberMock{})
 
 	lm.refreshOneAccount(account, context.Background())
 
@@ -315,9 +308,7 @@ func TestRefreshTokenFailureNoCredential(t *testing.T) {
 	}
 
 	refresher := &tokenRefresherMock{err: errors.New("refresh failed")}
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, refresher, &healthProberMock{},
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, refresher, &healthProberMock{})
 
 	lm.refreshOneAccount(account, context.Background())
 
@@ -353,9 +344,7 @@ func TestHealthCheckProbeSuccess(t *testing.T) {
 	prober := &healthProberMock{
 		result: &HealthProbeResult{StatusCode: 200},
 	}
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, prober,
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, prober)
 
 	lm.healthCheckOneAccount(account, context.Background())
 
@@ -401,9 +390,7 @@ func TestHealthCheckProbe401TriggersRelogin(t *testing.T) {
 	prober := &healthProberMock{
 		result: &HealthProbeResult{StatusCode: 401},
 	}
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, prober,
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, prober)
 
 	lm.healthCheckOneAccount(account, context.Background())
 
@@ -426,9 +413,7 @@ func TestHealthCheckNoProviderID(t *testing.T) {
 	store := setupTestRegistry(t)
 	reg := NewRegistry(store, &mockRegFlowRunner{})
 
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, &healthProberMock{},
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, &healthProberMock{})
 
 	lm.healthCheckOneAccount(config.CodexAccount{ID: 999, ProviderID: nil}, context.Background())
 }
@@ -460,9 +445,7 @@ func TestCycleOnEmptyList(t *testing.T) {
 	store := setupTestRegistry(t)
 	reg := NewRegistry(store, &mockRegFlowRunner{})
 
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, &healthProberMock{},
-	)
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, &healthProberMock{})
 
 	lm.runRefreshCycle()
 	lm.runHealthCheckCycle()

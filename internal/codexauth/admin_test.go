@@ -42,11 +42,9 @@ func setupTestAdmin(t *testing.T) (*CodexAdmin, *config.Store, *AccountRegistry)
 		result:  fr,
 	}
 
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, &healthProberMock{
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, &healthProberMock{
 			result: &HealthProbeResult{StatusCode: 200},
-		},
-	)
+		})
 
 	ca := NewCodexAdmin(reg, nil, lm, loginFlow, newBrowserClientMock(), store, nil, nil)
 	return ca, store, reg
@@ -467,11 +465,9 @@ func TestPutConfig(t *testing.T) {
 
 func TestBrowserStatus_Disconnected(t *testing.T) {
 	_, store, reg := setupTestAdmin(t)
-	lm := NewLifecycleManager(
-		DefaultCodexAuthConfig(), reg, store, nil, &healthProberMock{
+	lm := NewLifecycleManager(DefaultCodexAuthConfig(), reg, store, nil, nil, &healthProberMock{
 			result: &HealthProbeResult{StatusCode: 200},
-		},
-	)
+		})
 	ca := NewCodexAdmin(reg, nil, lm, &loginFlowRunnerMock{}, nil, store, nil, nil)
 	rec := serveRequest(ca.browserStatus, "GET", "/browser/status")
 

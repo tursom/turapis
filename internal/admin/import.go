@@ -87,9 +87,9 @@ func (a *Admin) importAccounts(w http.ResponseWriter, r *http.Request) {
 			if rt := acc["refresh_token"]; rt != "" {
 				tokens["refresh_token"] = rt
 			}
-			creds, _ := json.Marshal(map[string]interface{}{
-				"tokens": tokens,
-			})
+		creds, _ := json.Marshal(map[string]interface{}{
+			"credential": map[string]interface{}{"tokens": tokens},
+		})
 			oauthJSON = creds
 		case "api_key":
 			apiKey = acc["api_token"]

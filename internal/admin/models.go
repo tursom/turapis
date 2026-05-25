@@ -217,17 +217,11 @@ func (a *Admin) refreshOAuthTokens(w http.ResponseWriter, r *http.Request) {
 		if p.AuthMode != "oauth" {
 			continue
 		}
-		if err := provider.RefreshCodexToken(a.store, p.ID, p.Proxy); err != nil {
+		if err := provider.RefreshCodexToken(a.store, p.ID, p.Proxy, a.registry); err != nil {
 			slog.Warn("token_refresh_failed", "provider", p.Name, "error", err)
 			results = append(results, refreshResult{Provider: p.Name, Error: err.Error()})
 		} else {
 			results = append(results, refreshResult{Provider: p.Name, Success: true})
-			// Re-register with new token
-			a.registry.Delete(p.ID)
-			pUpdated, _ := a.store.GetProvider(p.ID)
-			if pUpdated != nil {
-				a.registerProviderInstance(pUpdated)
-			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -237,12 +231,10 @@ func (a *Admin) refreshOAuthTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func countOauthDiscoveredModels(store *config.Store, p config.Provider) int {
-	var creds map[string]interface{}
-	if json.Unmarshal([]byte(p.APIKey), &creds) == nil {
-		if tokens, ok := creds["tokens"].(map[string]interface{}); ok {
-			if models, ok := tokens["last_discovered_models"].([]interface{}); ok {
-				return len(models)
-			}
+	tokens, _ := provider.OAuthTokensJSON(p.APIKey)
+	if tokens != nil {
+		if models, ok := tokens["last_discovered_models"].([]interface{}); ok {
+			return len(models)
 		}
 	}
 	mappings, _ := store.ListModelMappings()

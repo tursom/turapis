@@ -58,6 +58,7 @@ func (p *AnthropicProvider) SupportsTool(name string) bool {
 func (p *AnthropicProvider) Name() string                 { return p.name }
 func (p *AnthropicProvider) ID() int                    { return p.id }
 func (p *AnthropicProvider) Protocol() models.ProtocolType { return models.ProtocolAnthropic }
+func (p *AnthropicProvider) SetAPIKey(key string)       { p.apiKey = key }
 
 // ChatCompletion 发送非流式请求
 func (p *AnthropicProvider) ChatCompletion(ctx context.Context, req *models.UnifiedRequest) (*models.UnifiedResponse, error) {

@@ -32,16 +32,7 @@ func (a *Admin) probeQuota(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "quota probe only supports oauth providers")
 		return
 	}
-	var creds struct {
-		Tokens struct {
-			AccessToken string `json:"access_token"`
-		} `json:"tokens"`
-	}
-	if json.Unmarshal([]byte(p.APIKey), &creds) != nil {
-		writeError(w, http.StatusInternalServerError, "invalid credential")
-		return
-	}
-	at := creds.Tokens.AccessToken
+	at := provider.ExtractOAuthAccessToken(p.APIKey)
 	if at == "" {
 		writeError(w, http.StatusInternalServerError, "no access_token")
 		return
@@ -138,15 +129,7 @@ func (a *Admin) batchProbeQuota(w http.ResponseWriter, r *http.Request) {
 		if p.AuthMode != "oauth" {
 			continue
 		}
-		var creds struct {
-			Tokens struct {
-				AccessToken string `json:"access_token"`
-			} `json:"tokens"`
-		}
-		if json.Unmarshal([]byte(p.APIKey), &creds) != nil {
-			continue
-		}
-		at := creds.Tokens.AccessToken
+		at := provider.ExtractOAuthAccessToken(p.APIKey)
 		if at == "" {
 			continue
 		}

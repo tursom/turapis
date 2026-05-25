@@ -4,7 +4,6 @@ package codexauth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -67,10 +66,12 @@ type TokenRefresher interface {
 
 // defaultTokenRefresher 是 TokenRefresher 的生产实现，
 // 直接委托给 provider.RefreshCodexToken。
-type defaultTokenRefresher struct{}
+type defaultTokenRefresher struct {
+	updater provider.ProviderKeyUpdater
+}
 
-func (defaultTokenRefresher) Refresh(store RegistryStore, providerID int, proxyURL string) error {
-	return provider.RefreshCodexToken(store, providerID, proxyURL)
+func (d defaultTokenRefresher) Refresh(store RegistryStore, providerID int, proxyURL string) error {
+	return provider.RefreshCodexToken(store, providerID, proxyURL, d.updater)
 }
 
 // CodexHealthProber 定义 Codex API 健康检查的探针接口。
@@ -143,6 +144,7 @@ func NewLifecycleManager(
 	cfg CodexAuthConfig,
 	reg *AccountRegistry,
 	store RegistryStore,
+	providerRegistry *provider.Registry,
 	refresher TokenRefresher,
 	prober CodexHealthProber,
 ) *LifecycleManager {
@@ -159,7 +161,7 @@ func NewLifecycleManager(
 		cfg.MaxConcurrentLogins = 1
 	}
 	if refresher == nil {
-		refresher = defaultTokenRefresher{}
+		refresher = defaultTokenRefresher{updater: providerRegistry}
 	}
 
 	return &LifecycleManager{
@@ -460,17 +462,8 @@ func (lm *LifecycleManager) healthCheckOneAccount(account config.CodexAccount, c
 	}
 }
 
-// extractAccessTokenFromCredentialJSON 从 OAuth 凭证 JSON 中提取 access_token。
-// 凭证格式: {"tokens":{"access_token":"...","refresh_token":"...",...}}
-// 若解析失败或字段缺失，返回空字符串。
+// extractAccessTokenFromCredentialJSON 从 OAuth 凭证 JSON 中提取 access_token，
+// 兼容新旧两种格式。若解析失败或字段缺失，返回空字符串。
 func extractAccessTokenFromCredentialJSON(credJSON string) string {
-	var cred struct {
-		Tokens struct {
-			AccessToken string `json:"access_token"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal([]byte(credJSON), &cred); err != nil {
-		return ""
-	}
-	return cred.Tokens.AccessToken
+	return provider.ExtractOAuthAccessToken(credJSON)
 }

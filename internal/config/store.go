@@ -909,7 +909,8 @@ func (s *Store) UpdateProviderAPIKey(id int, apiKey string) error {
 	return nil
 }
 
-// SaveProviderQuota 将配额数据存入 provider 的 api_key JSON 中的 tokens.quota 字段
+// SaveProviderQuota 将配额数据存入 provider 的 api_key JSON 中的 tokens.quota 字段。
+// 兼容新旧两种格式：{"tokens":{...}} 和 {"credential": {"tokens":{...}}}。
 func (s *Store) SaveProviderQuota(id int, quotaJSON []byte) error {
 	apiKey, err := s.GetProviderAPIKey(id)
 	if err != nil {
@@ -917,13 +918,17 @@ func (s *Store) SaveProviderQuota(id int, quotaJSON []byte) error {
 	}
 	var creds map[string]interface{}
 	if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
-		// 不是 JSON（例如纯 api_key mode），跳过
 		return nil
 	}
-	tokens, _ := creds["tokens"].(map[string]interface{})
+
+	tokens := resolveTokensMap(creds)
 	if tokens == nil {
 		tokens = make(map[string]interface{})
-		creds["tokens"] = tokens
+		if _, ok := creds["credential"]; ok {
+			creds["credential"].(map[string]interface{})["tokens"] = tokens
+		} else {
+			creds["credential"] = map[string]interface{}{"tokens": tokens}
+		}
 	}
 	var quotaObj interface{}
 	json.Unmarshal(quotaJSON, &quotaObj)
@@ -936,13 +941,25 @@ func (s *Store) SaveProviderQuota(id int, quotaJSON []byte) error {
 	return s.UpdateProviderAPIKey(id, string(newAPIKey))
 }
 
+func resolveTokensMap(creds map[string]interface{}) map[string]interface{} {
+	if t, ok := creds["tokens"].(map[string]interface{}); ok {
+		return t
+	}
+	if cr, ok := creds["credential"].(map[string]interface{}); ok {
+		if t, ok := cr["tokens"].(map[string]interface{}); ok {
+			return t
+		}
+	}
+	return nil
+}
+
 func ParseProviderQuota(apiKey string) *json.RawMessage {
 	var creds map[string]interface{}
 	if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
 		return nil
 	}
-	tokens, ok := creds["tokens"].(map[string]interface{})
-	if !ok {
+	tokens := resolveTokensMap(creds)
+	if tokens == nil {
 		return nil
 	}
 	q, ok := tokens["quota"]

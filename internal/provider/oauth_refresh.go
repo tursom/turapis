@@ -14,6 +14,67 @@ import (
 
 const codexTokenURL = "https://auth.openai.com/oauth/token"
 
+// OAuthTokensJSON 统一解析 OAuth 凭证 JSON，兼容两种格式：
+//
+//	旧格式: {"tokens": {"access_token": "...", ...}}
+//	新格式: {"email":"...", "credential": {"tokens": {"access_token": "...", ...}}, ...}
+//
+// 返回 tokens map 和从顶层或 credential 层解析后的 access_token。
+func OAuthTokensJSON(apiKey string) (tokens map[string]interface{}, accessToken string) {
+	var creds map[string]interface{}
+	if json.Unmarshal([]byte(apiKey), &creds) != nil {
+		return nil, ""
+	}
+
+	// 旧格式：tokens 在顶层
+	if t, ok := creds["tokens"].(map[string]interface{}); ok {
+		if at, ok := t["access_token"].(string); ok && at != "" {
+			return t, at
+		}
+		return t, ""
+	}
+
+	// 新格式(codex-login)：credential.tokens
+	if cr, ok := creds["credential"].(map[string]interface{}); ok {
+		if t, ok := cr["tokens"].(map[string]interface{}); ok {
+			if at, ok := t["access_token"].(string); ok && at != "" {
+				return t, at
+			}
+			return t, ""
+		}
+	}
+
+	return nil, ""
+}
+
+// ExtractOAuthAccessToken 从 OAuth 凭证 JSON 中提取 access_token，兼容新旧格式。
+func ExtractOAuthAccessToken(apiKey string) string {
+	_, at := OAuthTokensJSON(apiKey)
+	return at
+}
+
+// NormalizeOAuthCredential 将任意 OAuth 凭证 JSON 规范化为旧格式 {"tokens":{...}}。
+// 如果输入不是 JSON 或解析失败，返回空字符串。
+func NormalizeOAuthCredential(apiKey string) string {
+	var creds map[string]interface{}
+	if json.Unmarshal([]byte(apiKey), &creds) != nil {
+		return ""
+	}
+
+	// 已经是旧格式
+	if _, ok := creds["tokens"]; ok {
+		return apiKey
+	}
+
+	// 新格式：提取 credential
+	if cr, ok := creds["credential"].(map[string]interface{}); ok {
+		normalized, _ := json.Marshal(cr)
+		return string(normalized)
+	}
+
+	return ""
+}
+
 type tokenRefreshResult struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -39,8 +100,8 @@ func extractClientID(accessToken string) string {
 	return claims.ClientID
 }
 
-func RefreshCodexToken(store TokenRefresherStore, providerID int, proxyURL string) error {
-	return refreshCodexToken(store, providerID, proxyURL)
+func RefreshCodexToken(store TokenRefresherStore, providerID int, proxyURL string, updater ProviderKeyUpdater) error {
+	return refreshCodexToken(store, providerID, proxyURL, updater)
 }
 
 type TokenRefresherStore interface {
@@ -48,10 +109,18 @@ type TokenRefresherStore interface {
 	UpdateProviderAPIKey(id int, apiKey string) error
 }
 
-func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL string) error {
-	apiKey, err := store.GetProviderAPIKey(providerID)
+func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL string, updater ProviderKeyUpdater) error {
+	apiKeyRaw, err := store.GetProviderAPIKey(providerID)
 	if err != nil {
 		return fmt.Errorf("get provider api key: %w", err)
+	}
+
+	isNewFormat := strings.Contains(apiKeyRaw, `"credential"`)
+
+	// 统一规范化为旧格式 {"tokens":{...}} 以便解析
+	apiKey := NormalizeOAuthCredential(apiKeyRaw)
+	if apiKey == "" {
+		apiKey = apiKeyRaw
 	}
 
 	var creds struct {
@@ -116,25 +185,44 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 		return fmt.Errorf("refresh response missing access_token")
 	}
 
-	newCreds := map[string]interface{}{
-		"tokens": map[string]interface{}{
-			"access_token":  result.AccessToken,
-			"refresh_token": creds.Tokens.RefreshToken,
-			"id_token":      creds.Tokens.IDToken,
-			"client_id":     clientID,
-			"expires_at":    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UnixMilli(),
-		},
+	newTokens := map[string]interface{}{
+		"access_token":  result.AccessToken,
+		"refresh_token": creds.Tokens.RefreshToken,
+		"id_token":      creds.Tokens.IDToken,
+		"client_id":     clientID,
+		"expires_at":    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UnixMilli(),
 	}
 	if result.RefreshToken != "" {
-		newCreds["tokens"].(map[string]interface{})["refresh_token"] = result.RefreshToken
+		newTokens["refresh_token"] = result.RefreshToken
 	}
 	if result.IDToken != "" {
-		newCreds["tokens"].(map[string]interface{})["id_token"] = result.IDToken
+		newTokens["id_token"] = result.IDToken
 	}
 
-	newAPIKey, _ := json.Marshal(newCreds)
+	// 统一使用新版 codex-login 格式存储
+	var newAPIKeyData map[string]interface{}
+	if isNewFormat {
+		// 保持原有 email/account_id/user_id/plan_type，只更新 credential
+		var orig map[string]interface{}
+		json.Unmarshal([]byte(apiKeyRaw), &orig)
+		orig["credential"] = map[string]interface{}{"tokens": newTokens}
+		newAPIKeyData = orig
+	} else {
+		// 旧格式迁移到新格式（email 等信息暂缺）
+		newAPIKeyData = map[string]interface{}{
+			"credential": map[string]interface{}{"tokens": newTokens},
+		}
+	}
+
+	newAPIKey, _ := json.Marshal(newAPIKeyData)
 	if err := store.UpdateProviderAPIKey(providerID, string(newAPIKey)); err != nil {
 		return fmt.Errorf("update provider api key: %w", err)
+	}
+
+	if updater != nil {
+		if err := updater.SetProviderAPIKey(providerID, result.AccessToken); err != nil {
+			slog.Warn("set_provider_api_key_in_memory_failed", "provider_id", providerID, "error", err)
+		}
 	}
 
 	slog.Info("oauth_token_refreshed", "provider_id", providerID,
