@@ -60,6 +60,8 @@ const (
 	// ctxKeyRawResponseBody 用于在 ChatCompletionStream 和 routeStream 之间传递
 	// codex Responses API 的原始 SSE 响应体，绕过 unified event 解析-重建循环。
 	ctxKeyRawResponseBody
+	// ctxKeyClientHeaders 用于将客户端原始 HTTP headers 透传到上游 provider。
+	ctxKeyClientHeaders
 )
 
 // AttemptRecorder is called by the router for each provider attempt (success or failure).
@@ -157,6 +159,17 @@ func WithRawProxy(ctx context.Context) context.Context {
 func RawProxyFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeyRawProxy).(bool)
 	return v
+}
+
+func WithClientHeaders(ctx context.Context, h http.Header) context.Context {
+	return context.WithValue(ctx, ctxKeyClientHeaders, h)
+}
+
+func ClientHeadersFromContext(ctx context.Context) http.Header {
+	if h, ok := ctx.Value(ctxKeyClientHeaders).(http.Header); ok {
+		return h
+	}
+	return nil
 }
 
 // UnifiedUsage 统一用量信息

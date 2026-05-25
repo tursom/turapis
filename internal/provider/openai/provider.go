@@ -424,6 +424,7 @@ func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, head
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -444,6 +445,7 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if isJWTKey(apiKey) {
@@ -467,6 +469,7 @@ func (p *OpenAIProvider) doGet(ctx context.Context, path string) (*http.Response
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	return p.client.Do(req)
 }
@@ -1018,6 +1021,7 @@ func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte)
 	p.clearLastQuota()
 	apiKey := p.getAPIKey()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Originator", "codex_cli_rs")
@@ -1039,6 +1043,7 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 	p.clearLastQuota()
 	apiKey := p.getAPIKey()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Originator", "codex_cli_rs")

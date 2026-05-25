@@ -20,6 +20,8 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r = r.WithContext(models.WithClientHeaders(r.Context(), r.Header))
+
 	if c := collectorFromContext(r.Context()); c != nil {
 		c.SetClientBody(string(bodyBytes))
 	}

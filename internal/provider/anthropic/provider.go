@@ -237,6 +237,7 @@ func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body int
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -254,6 +255,7 @@ func (p *AnthropicProvider) doGet(ctx context.Context, path string) (*http.Respo
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	return p.client.Do(req)
