@@ -41,8 +41,8 @@ function ProviderNode({ data, selected }: NodeProps) {
   if (provider.quota?.secondary) quotaEntries.push(provider.quota.secondary)
   if (provider.quota?.tertiary) quotaEntries.push(provider.quota.tertiary)
 
-  const protocolLabel = provider.auth_mode === 'oauth' && provider.protocol === 'openai'
-    ? 'Codex'
+  const protocolLabel = provider.auth_mode === 'oauth'
+    ? 'OAuth'
     : provider.protocol === 'openai' ? 'OpenAI' : 'Anthropic'
   const protocolColor = provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : 'purple'
   const authLabel = provider.auth_mode === 'oauth' ? 'OAuth' : 'API Key'

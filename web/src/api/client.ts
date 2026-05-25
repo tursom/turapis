@@ -1,4 +1,4 @@
-import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult, QuotaInfo, User, LoginResponse, CodexAccount, AsyncTask, CodexConfig, EmailCredential, BrowserStatus } from './types'
+import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStatus, DiscoverResult, Site, SiteModel, CreateProviderFromSiteResult, QuotaInfo, User, LoginResponse } from './types'
 
 const API_BASE = ''
 
@@ -198,75 +198,3 @@ export function deleteUser(id: number) {
   return request<{ status: string }>(`/admin/users/${id}`, { method: 'DELETE' })
 }
 
-// --- Codex Accounts ---
-export function fetchCodexAccounts() {
-  return request<CodexAccount[]>('/admin/codex/accounts')
-}
-
-export function fetchCodexAccount(id: number) {
-  return request<CodexAccount>(`/admin/codex/accounts/${id}`)
-}
-
-// --- Operations ---
-export function triggerRegister() {
-  return request<{ task_id: string; status: string }>('/admin/codex/register', { method: 'POST' })
-}
-
-export function generateAuthURL() {
-  return request<{ auth_url: string }>('/admin/codex/login', { method: 'POST' })
-}
-
-export function triggerRelogin(id: number) {
-  return request<{ task_id: string; status: string }>(`/admin/codex/accounts/${id}/relogin`, { method: 'POST' })
-}
-
-export function refreshCodexAccount(id: number) {
-  return request<{ status: string }>(`/admin/codex/accounts/${id}/refresh`, { method: 'POST' })
-}
-
-export function healthCheckCodexAccount(id: number) {
-  return request<{ status: string }>(`/admin/codex/accounts/${id}/health-check`, { method: 'POST' })
-}
-
-// --- Tasks ---
-export function fetchTaskStatus(taskId: string) {
-  return request<AsyncTask>(`/admin/codex/tasks/${taskId}`)
-}
-
-export function cancelTask(taskId: string) {
-  return request<{ status: string }>(`/admin/codex/tasks/${taskId}/cancel`, { method: 'POST' })
-}
-
-export function fetchAllTasks() {
-  return request<AsyncTask[]>('/admin/codex/tasks')
-}
-
-// --- Email Credential ---
-export function setEmailCredential(id: number, cred: EmailCredential) {
-  return request<{ status: string }>(`/admin/codex/accounts/${id}/email-credential`, { method: 'PUT', body: JSON.stringify(cred) })
-}
-
-export function deleteEmailCredential(id: number) {
-  return request<{ status: string }>(`/admin/codex/accounts/${id}/email-credential`, { method: 'DELETE' })
-}
-
-// --- Account ---
-export function deleteCodexAccount(id: number) {
-  return request<{ status: string }>(`/admin/codex/accounts/${id}`, { method: 'DELETE' })
-}
-
-// --- Config & Status ---
-export function fetchCodexConfig() {
-  return request<CodexConfig>('/admin/codex/config')
-}
-
-export function fetchBrowserStatus() {
-  return request<BrowserStatus>('/admin/codex/browser/status')
-}
-
-export function updateCodexConfig(cfg: Partial<CodexConfig>) {
-  return request<CodexConfig>('/admin/codex/config', {
-    method: 'PUT',
-    body: JSON.stringify(cfg),
-  })
-}

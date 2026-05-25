@@ -263,7 +263,7 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
                       color={provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : 'purple'}
                       style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px', flexShrink: 0 }}
                     >
-                      {provider.auth_mode === 'oauth' && provider.protocol === 'openai' ? 'Codex' : provider.protocol === 'openai' ? 'OpenAI' : 'Anthropic'}
+                      {provider.auth_mode === 'oauth' ? 'OAuth' : provider.protocol === 'openai' ? 'OpenAI' : 'Anthropic'}
                     </Tag>
                     <Tag color={provider.auth_mode === 'oauth' ? 'orange' : 'default'} style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px', flexShrink: 0 }}>
                       {provider.auth_mode === 'oauth' ? 'OAuth' : 'API'}
