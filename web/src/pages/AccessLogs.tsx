@@ -51,6 +51,13 @@ export default function AccessLogs() {
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
+  const setQuickRange = (hours: number) => {
+    const now = new Date()
+    const from = new Date(now.getTime() - hours * 60 * 60 * 1000)
+    setFilterFrom(from.toISOString().slice(0, 16))
+    setFilterTo(now.toISOString().slice(0, 16))
+  }
+
   useEffect(() => {
     fetchAPIKeys().then(setApiKeys).catch(() => {})
   }, [])
@@ -87,10 +94,7 @@ export default function AccessLogs() {
   // init default time range on first mount
   useEffect(() => {
     if (!filterFrom && !filterTo) {
-      const now = new Date()
-      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
-      setFilterFrom(oneHourAgo.toISOString().slice(0, 16))
-      setFilterTo(now.toISOString().slice(0, 16))
+      setQuickRange(1)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -284,6 +288,14 @@ export default function AccessLogs() {
           <input type="datetime-local" value={filterTo} onChange={e => setFilterTo(e.target.value)}
             style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }} />
         </label>
+        <span style={{ fontSize: 12, color: '#999', alignSelf: 'flex-end', marginBottom: 2, marginRight: -4 }}>快捷：</span>
+        {[{ h: 1, label: '1小时' }, { h: 12, label: '12小时' }, { h: 24, label: '24小时' }, { h: 72, label: '3天' }, { h: 168, label: '7天' }].map(r => (
+          <button key={r.h} onClick={() => setQuickRange(r.h)}
+            style={{
+              padding: '2px 8px', border: '1px solid #d9d9d9', borderRadius: 4, background: '#fff',
+              cursor: 'pointer', fontSize: 12, color: '#666', whiteSpace: 'nowrap',
+            }}>{r.label}</button>
+        ))}
         <label style={{ fontSize: 12, color: '#666' }}>
           API Key
           <select value={filterKeyId ?? ''} onChange={e => setFilterKeyId(e.target.value ? Number(e.target.value) : undefined)}
