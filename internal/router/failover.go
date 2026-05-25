@@ -90,17 +90,28 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 
 	var lastErr error
 	var attempts []AttemptInfo
+	attemptNum := 0
 
-	for i, p := range chain {
+	callProvider := func(p provider.Provider) (*models.UnifiedResponse, error, time.Duration, string, string, int) {
+		attemptNum++
 		start := time.Now()
 		quotaBefore := r.getProviderQuotaJSON(p.ID())
 		resp, err := p.ChatCompletion(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
 		quotaAfter := r.getProviderQuotaJSON(p.ID())
+		return resp, err, duration, quotaBefore, quotaAfter, attemptNum
+	}
+
+	for _, p := range chain {
+		if _, err := r.refreshOAuthProviderIfNeeded(p, false); err != nil {
+			slog.Warn("oauth_preemptive_refresh_failed", "provider", p.Name(), "error", err)
+		}
+
+		resp, err, duration, quotaBefore, quotaAfter, n := callProvider(p)
 
 		if err == nil {
-			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
+			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, n)
 			slog.Info("route_success",
 				"model", req.Model,
 				"used_provider", p.Name(),
@@ -116,7 +127,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 			}, nil
 		}
 
-		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, i+1)
+		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, n)
 
 		cat := models.ClassifyError(err)
 		attempts = append(attempts, AttemptInfo{
@@ -130,6 +141,44 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 			"error_category", string(cat),
 			"error", formatError(err),
 		)
+
+		if models.IsAuthError(err) {
+			if refreshed, refreshErr := r.refreshOAuthProviderIfNeeded(p, true); refreshErr != nil {
+				slog.Warn("oauth_refresh_after_auth_error_failed", "provider", p.Name(), "error", refreshErr)
+			} else if refreshed {
+				resp, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, retryN := callProvider(p)
+				if retryErr == nil {
+					recordAttempt(ctx, p.Name(), 200, nil, retryDuration, retryQuotaBefore, retryQuotaAfter, true, retryN)
+					slog.Info("route_success_after_oauth_refresh",
+						"model", req.Model,
+						"used_provider", p.Name(),
+						"attempts", len(attempts)+1,
+						"duration_ms", retryDuration.Milliseconds(),
+					)
+					return &RouteResult{
+						Response:     resp,
+						UsedProvider: p.Name(),
+						Attempts:     attempts,
+						QuotaBefore:  retryQuotaBefore,
+						QuotaAfter:   retryQuotaAfter,
+					}, nil
+				}
+				recordAttempt(ctx, p.Name(), 0, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, false, retryN)
+				retryCat := models.ClassifyError(retryErr)
+				attempts = append(attempts, AttemptInfo{
+					Provider: p.Name(),
+					Error:    retryErr,
+					Duration: retryDuration,
+				})
+				slog.Warn("provider_failed_after_oauth_refresh",
+					"provider", p.Name(),
+					"error_category", string(retryCat),
+					"error", formatError(retryErr),
+				)
+				cat = retryCat
+				err = retryErr
+			}
+		}
 
 		if !models.ShouldFailover(cat) {
 			return nil, err // auth error — 不重试
@@ -159,20 +208,32 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 
 	var lastErr error
 	var attempts []AttemptInfo
-	for i, p := range chain {
+	attemptNum := 0
+
+	callProvider := func(p provider.Provider) (<-chan models.UnifiedStreamEvent, error, time.Duration, string, string, int) {
+		attemptNum++
 		start := time.Now()
 		quotaBefore := r.getProviderQuotaJSON(p.ID())
 		events, err := p.ChatCompletionStream(ctx, req)
 		duration := time.Since(start)
 		r.saveQuotaFromProvider(p)
 		quotaAfter := r.getProviderQuotaJSON(p.ID())
+		return events, err, duration, quotaBefore, quotaAfter, attemptNum
+	}
+
+	for _, p := range chain {
+		if _, err := r.refreshOAuthProviderIfNeeded(p, false); err != nil {
+			slog.Warn("oauth_preemptive_refresh_failed", "provider", p.Name(), "error", err)
+		}
+
+		events, err, duration, quotaBefore, quotaAfter, n := callProvider(p)
 		if err == nil {
-			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, i+1)
-			if i > 0 {
+			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, n)
+			if n > 1 {
 				slog.Info("stream_failover",
 					"model", req.Model,
 					"used_provider", p.Name(),
-					"attempt", i+1,
+					"attempt", n,
 				)
 			}
 			result := &StreamRouteResult{
@@ -192,7 +253,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 			return result, nil
 		}
 
-		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, i+1)
+		recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, quotaAfter, false, n)
 
 		cat := models.ClassifyError(err)
 		attempts = append(attempts, AttemptInfo{
@@ -205,6 +266,44 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 			"error_category", string(cat),
 			"error", formatError(err),
 		)
+
+		if models.IsAuthError(err) {
+			if refreshed, refreshErr := r.refreshOAuthProviderIfNeeded(p, true); refreshErr != nil {
+				slog.Warn("oauth_refresh_after_stream_auth_error_failed", "provider", p.Name(), "error", refreshErr)
+			} else if refreshed {
+				events, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, retryN := callProvider(p)
+				if retryErr == nil {
+					recordAttempt(ctx, p.Name(), 200, nil, retryDuration, retryQuotaBefore, retryQuotaAfter, true, retryN)
+					result := &StreamRouteResult{
+						Events:       events,
+						ProviderName: p.Name(),
+						QuotaBefore:  retryQuotaBefore,
+						QuotaAfter:   retryQuotaAfter,
+					}
+					type rawBodyProvider interface {
+						TakeRawBody() io.ReadCloser
+					}
+					if rbp, ok := p.(rawBodyProvider); ok {
+						result.RawBody = rbp.TakeRawBody()
+					}
+					return result, nil
+				}
+				recordAttempt(ctx, p.Name(), 0, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, false, retryN)
+				retryCat := models.ClassifyError(retryErr)
+				attempts = append(attempts, AttemptInfo{
+					Provider: p.Name(),
+					Error:    retryErr,
+					Duration: retryDuration,
+				})
+				slog.Warn("stream_connect_failed_after_oauth_refresh",
+					"provider", p.Name(),
+					"error_category", string(retryCat),
+					"error", formatError(retryErr),
+				)
+				cat = retryCat
+				err = retryErr
+			}
+		}
 
 		lastErr = err
 		if !models.ShouldFailover(cat) {

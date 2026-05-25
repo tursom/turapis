@@ -367,9 +367,9 @@ func TestLastQuotaReturnsCopy(t *testing.T) {
 func TestDoRequestClearsStaleQuotaOnTransportError(t *testing.T) {
 	p := &OpenAIProvider{
 		url:    "https://example.test",
-		apiKey: "sk-test",
 		client: &http.Client{Transport: failingRoundTripper{}},
 	}
+	p.SetAPIKey("sk-test")
 	p.setLastQuota(map[string]interface{}{
 		"primary": map[string]interface{}{
 			"used_percent": 87.0,

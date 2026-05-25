@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
@@ -23,7 +24,7 @@ type OpenAIProvider struct {
 	id             int
 	name           string
 	url            string
-	apiKey         string
+	apiKey         atomic.Value
 	client         *http.Client
 	supportedTools map[string]bool
 	searxngURL     string
@@ -44,28 +45,36 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 	if proxyURL != "" {
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
-	return &OpenAIProvider{
-		id:     id,
-		name:   name,
-		url:    strings.TrimSuffix(baseURL, "/"),
-		apiKey: apiKey,
+	p := &OpenAIProvider{
+		id:   id,
+		name: name,
+		url:  strings.TrimSuffix(baseURL, "/"),
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   300 * time.Second,
 		},
 		supportedTools: st,
 	}
+	p.apiKey.Store(apiKey)
+	return p
 }
 
 func (p *OpenAIProvider) Name() string                  { return p.name }
-func (p *OpenAIProvider) ID() int                    { return p.id }
+func (p *OpenAIProvider) ID() int                       { return p.id }
 func (p *OpenAIProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
-func (p *OpenAIProvider) SetAPIKey(key string)       { p.apiKey = key }
+func (p *OpenAIProvider) SetAPIKey(key string)          { p.apiKey.Store(key) }
 func (p *OpenAIProvider) SupportsTool(name string) bool {
 	if p.supportedTools == nil {
 		return true
 	}
 	return p.supportedTools[name]
+}
+
+func (p *OpenAIProvider) getAPIKey() string {
+	if v, ok := p.apiKey.Load().(string); ok {
+		return v
+	}
+	return ""
 }
 
 func (p *OpenAIProvider) buildNamespaceMap(tools json.RawMessage) {
@@ -374,9 +383,10 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.U
 
 // ListModels 列出可用模型。OAuth token 使用 Codex 专用端点。
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]models.ModelInfo, error) {
+	apiKey := p.getAPIKey()
 	path := "/models"
 	extraHeaders := map[string]string{}
-	if len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" {
+	if isJWTKey(apiKey) {
 		path = "/models?client_version=1.0.0"
 		extraHeaders["Originator"] = "codex_cli_rs"
 		extraHeaders["Accept"] = "application/json"
@@ -409,11 +419,12 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]models.ModelInfo, er
 }
 
 func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, headers map[string]string) (*http.Response, error) {
+	apiKey := p.getAPIKey()
 	req, err := http.NewRequestWithContext(ctx, "GET", p.url+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -422,6 +433,7 @@ func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, head
 
 func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interface{}) (*http.Response, error) {
 	p.clearLastQuota()
+	apiKey := p.getAPIKey()
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -433,8 +445,8 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-	if len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" {
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if isJWTKey(apiKey) {
 		v := codexVersion(ctx)
 		req.Header.Set("Originator", "codex_cli_rs")
 		req.Header.Set("Version", v)
@@ -450,11 +462,12 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 }
 
 func (p *OpenAIProvider) doGet(ctx context.Context, path string) (*http.Response, error) {
+	apiKey := p.getAPIKey()
 	req, err := http.NewRequestWithContext(ctx, "GET", p.url+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	return p.client.Do(req)
 }
 
@@ -939,7 +952,9 @@ func toUnifiedResponse(oaiResp *chatCompletionResponse) *models.UnifiedResponse 
 	return resp
 }
 
-func (p *OpenAIProvider) isJWT() bool { return len(p.apiKey) > 3 && p.apiKey[:3] == "eyJ" }
+func (p *OpenAIProvider) isJWT() bool { return isJWTKey(p.getAPIKey()) }
+
+func isJWTKey(key string) bool { return len(key) > 3 && key[:3] == "eyJ" }
 
 func (p *OpenAIProvider) LastQuota() map[string]interface{} {
 	p.quotaMu.RLock()
@@ -965,7 +980,7 @@ func cloneQuota(q map[string]interface{}) map[string]interface{} {
 	}
 	c := make(map[string]interface{}, len(q))
 	for k, v := range q {
-		c[k] = v
+		c[k] = cloneQuotaValue(v)
 	}
 	return c
 }
@@ -1001,9 +1016,10 @@ func codexVersion(ctx context.Context) string {
 
 func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error) {
 	p.clearLastQuota()
+	apiKey := p.getAPIKey()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Originator", "codex_cli_rs")
 	req.Header.Set("Version", codexVersion(ctx))
 	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))
@@ -1021,9 +1037,10 @@ func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte)
 
 func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte) (<-chan models.UnifiedStreamEvent, error) {
 	p.clearLastQuota()
+	apiKey := p.getAPIKey()
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(p.url, "/")+"/responses", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Originator", "codex_cli_rs")
 	req.Header.Set("Version", codexVersion(ctx))
 	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tursom/turapis/internal/models"
@@ -21,7 +22,7 @@ type AnthropicProvider struct {
 	id             int
 	name           string
 	url            string
-	apiKey         string
+	apiKey         atomic.Value
 	client         *http.Client
 	supportedTools map[string]bool
 }
@@ -35,17 +36,18 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 	if proxyURL != "" {
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
-	return &AnthropicProvider{
-		id:             id,
-		name:           name,
-		url:            strings.TrimSuffix(baseURL, "/"),
-		apiKey:         apiKey,
+	p := &AnthropicProvider{
+		id:   id,
+		name: name,
+		url:  strings.TrimSuffix(baseURL, "/"),
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   300 * time.Second,
 		},
 		supportedTools: st,
 	}
+	p.apiKey.Store(apiKey)
+	return p
 }
 
 func (p *AnthropicProvider) SupportsTool(name string) bool {
@@ -55,10 +57,17 @@ func (p *AnthropicProvider) SupportsTool(name string) bool {
 	return p.supportedTools[name]
 }
 
-func (p *AnthropicProvider) Name() string                 { return p.name }
-func (p *AnthropicProvider) ID() int                    { return p.id }
+func (p *AnthropicProvider) Name() string                  { return p.name }
+func (p *AnthropicProvider) ID() int                       { return p.id }
 func (p *AnthropicProvider) Protocol() models.ProtocolType { return models.ProtocolAnthropic }
-func (p *AnthropicProvider) SetAPIKey(key string)       { p.apiKey = key }
+func (p *AnthropicProvider) SetAPIKey(key string)          { p.apiKey.Store(key) }
+
+func (p *AnthropicProvider) getAPIKey() string {
+	if v, ok := p.apiKey.Load().(string); ok {
+		return v
+	}
+	return ""
+}
 
 // ChatCompletion 发送非流式请求
 func (p *AnthropicProvider) ChatCompletion(ctx context.Context, req *models.UnifiedRequest) (*models.UnifiedResponse, error) {
@@ -217,6 +226,7 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]models.ModelInfo,
 }
 
 func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body interface{}) (*http.Response, error) {
+	apiKey := p.getAPIKey()
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -228,7 +238,7 @@ func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body int
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
+	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := p.client.Do(req)
@@ -239,11 +249,12 @@ func (p *AnthropicProvider) doRequest(ctx context.Context, path string, body int
 }
 
 func (p *AnthropicProvider) doGet(ctx context.Context, path string) (*http.Response, error) {
+	apiKey := p.getAPIKey()
 	req, err := http.NewRequestWithContext(ctx, "GET", p.url+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("x-api-key", p.apiKey)
+	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	return p.client.Do(req)
 }

@@ -15,6 +15,8 @@ import (
 	"github.com/tursom/turapis/internal/provider"
 )
 
+var refreshOAuthToken = provider.RefreshCodexToken
+
 func (a *Admin) createModelMapping(w http.ResponseWriter, r *http.Request) {
 	var m config.ModelMapping
 	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
@@ -104,17 +106,23 @@ func (a *Admin) discoverModels(w http.ResponseWriter, r *http.Request) {
 
 	modelInfos, err := prov.ListModels(ctx)
 	if err != nil {
-			if p.AuthMode == "oauth" && models.IsAuthError(err) {
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"provider": p.Name,
-					"count":    countOauthDiscoveredModels(a.store, *p),
-				})
+		if p.AuthMode == "oauth" && models.IsAuthError(err) {
+			if refreshErr := refreshOAuthToken(a.store, p.ID, p.Proxy, a.registry); refreshErr != nil {
+				slog.Warn("model_discovery_token_refresh_failed", "provider", p.Name, "error", refreshErr)
+				writeError(w, http.StatusUnauthorized, "refresh oauth token: "+refreshErr.Error())
 				return
 			}
+			modelInfos, err = prov.ListModels(ctx)
+			if err == nil {
+				slog.Info("model_discovery_retried_after_oauth_refresh", "provider", p.Name)
+			}
+		}
+		if err != nil {
 			slog.Warn("model_discovery_failed", "provider", p.Name, "error", err)
 			writeError(w, http.StatusInternalServerError, "discover models: "+err.Error())
 			return
 		}
+	}
 
 	for _, m := range modelInfos {
 		if err := a.store.AddProviderModel(id, m.ID, m.Name); err != nil {
@@ -178,12 +186,23 @@ func (a *Admin) discoverAllModels(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			if p.AuthMode == "oauth" && models.IsAuthError(err) {
-				results = append(results, result{Provider: p.Name, Count: countOauthDiscoveredModels(a.store, p)})
+				if refreshErr := refreshOAuthToken(a.store, p.ID, p.Proxy, a.registry); refreshErr != nil {
+					slog.Warn("batch_discover_token_refresh_failed", "provider", p.Name, "error", refreshErr)
+					results = append(results, result{Provider: p.Name, Error: "refresh oauth token: " + refreshErr.Error()})
+					continue
+				}
+				ctx, cancel = context.WithTimeout(r.Context(), 30*time.Second)
+				modelInfos, err = prov.ListModels(ctx)
+				cancel()
+				if err == nil {
+					slog.Info("batch_discover_retried_after_oauth_refresh", "provider", p.Name)
+				}
+			}
+			if err != nil {
+				slog.Warn("batch_discover_failed", "provider", p.Name, "error", err)
+				results = append(results, result{Provider: p.Name, Error: err.Error()})
 				continue
 			}
-			slog.Warn("batch_discover_failed", "provider", p.Name, "error", err)
-			results = append(results, result{Provider: p.Name, Error: err.Error()})
-			continue
 		}
 
 		for _, m := range modelInfos {
@@ -217,7 +236,7 @@ func (a *Admin) refreshOAuthTokens(w http.ResponseWriter, r *http.Request) {
 		if p.AuthMode != "oauth" {
 			continue
 		}
-		if err := provider.RefreshCodexToken(a.store, p.ID, p.Proxy, a.registry); err != nil {
+		if err := refreshOAuthToken(a.store, p.ID, p.Proxy, a.registry); err != nil {
 			slog.Warn("token_refresh_failed", "provider", p.Name, "error", err)
 			results = append(results, refreshResult{Provider: p.Name, Error: err.Error()})
 		} else {
@@ -250,8 +269,8 @@ func countOauthDiscoveredModels(store *config.Store, p config.Provider) int {
 func (a *Admin) getStatus(w http.ResponseWriter, r *http.Request) {
 	providers, _ := a.store.ListEnabledProviders()
 	status := map[string]interface{}{
-		"status":          "ok",
-		"provider_count":  len(providers),
+		"status":           "ok",
+		"provider_count":   len(providers),
 		"registered_count": len(a.registry.List()),
 	}
 

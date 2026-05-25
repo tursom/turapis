@@ -26,7 +26,7 @@ type gatewayRawProvider struct {
 }
 
 func (p *gatewayRawProvider) Name() string { return p.name }
-func (p *gatewayRawProvider) ID() int    { return p.id }
+func (p *gatewayRawProvider) ID() int      { return p.id }
 
 func (p *gatewayRawProvider) ChatCompletion(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
 	return &models.UnifiedResponse{}, nil
@@ -43,6 +43,8 @@ func (p *gatewayRawProvider) ListModels(context.Context) ([]models.ModelInfo, er
 }
 
 func (p *gatewayRawProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
+
+func (p *gatewayRawProvider) SetAPIKey(string) {}
 
 func (p *gatewayRawProvider) SupportsTool(string) bool { return true }
 
@@ -102,7 +104,7 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":321,"output_tokens":54}}}` + "\n\n"
 	p := &gatewayRawProvider{name: "codex-raw", body: rawBody, header: rawQuotaHeader("42")}
-	if err := store.CreateProvider(&config.Provider{
+	stored := &config.Provider{
 		Name:           p.name,
 		BaseURL:        "https://example.test",
 		APIKey:         `{"tokens":{"access_token":"test-token","quota":{"primary":{"used_percent":11,"reset_after_seconds":600,"window_minutes":300}}}}`,
@@ -111,9 +113,11 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 		Priority:       10,
 		Enabled:        true,
 		SupportedTools: "[]",
-	}); err != nil {
+	}
+	if err := store.CreateProvider(stored); err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
+	p.id = stored.ID
 	registry.Register(p)
 
 	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
@@ -151,11 +155,11 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 	assertQuotaUsed(t, got.QuotaBefore, 11)
 	assertQuotaUsed(t, got.QuotaAfter, 42)
 
-	stored, err := store.GetProvider(p.id)
+	fetched, err := store.GetProvider(p.id)
 	if err != nil {
 		t.Fatalf("get provider: %v", err)
 	}
-	rawQuota := config.ParseProviderQuota(stored.APIKey)
+	rawQuota := config.ParseProviderQuota(fetched.APIKey)
 	if rawQuota == nil {
 		t.Fatalf("stored quota = %v, want refreshed quota", rawQuota)
 	}

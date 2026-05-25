@@ -8,11 +8,23 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const codexTokenURL = "https://auth.openai.com/oauth/token"
+var codexTokenURL = "https://auth.openai.com/oauth/token"
+
+var codexRefreshLocks sync.Map
+
+var newCodexTokenHTTPClient = func(proxyURL string) *http.Client {
+	transport := SharedTransport()
+	if proxyURL != "" {
+		transport = NewTransportWithProxy(proxyURL)
+	}
+	return &http.Client{Timeout: 15 * time.Second, Transport: transport}
+}
 
 // OAuthTokensJSON 统一解析 OAuth 凭证 JSON，兼容两种格式：
 //
@@ -82,6 +94,11 @@ type tokenRefreshResult struct {
 	ExpiresIn    int    `json:"expires_in"`
 }
 
+func getProviderRefreshLock(providerID int) *sync.Mutex {
+	v, _ := codexRefreshLocks.LoadOrStore(providerID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func extractClientID(accessToken string) string {
 	parts := strings.Split(accessToken, ".")
 	if len(parts) < 2 {
@@ -109,40 +126,36 @@ type TokenRefresherStore interface {
 	UpdateProviderAPIKey(id int, apiKey string) error
 }
 
+type tokenRefresherCASStore interface {
+	TokenRefresherStore
+	UpdateProviderAPIKeyIfCurrent(id int, currentAPIKey string, newAPIKey string) (bool, error)
+}
+
 func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL string, updater ProviderKeyUpdater) error {
+	mu := getProviderRefreshLock(providerID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	apiKeyRaw, err := store.GetProviderAPIKey(providerID)
 	if err != nil {
 		return fmt.Errorf("get provider api key: %w", err)
 	}
 
-	isNewFormat := strings.Contains(apiKeyRaw, `"credential"`)
-
-	// 统一规范化为旧格式 {"tokens":{...}} 以便解析
-	apiKey := NormalizeOAuthCredential(apiKeyRaw)
-	if apiKey == "" {
-		apiKey = apiKeyRaw
+	_, tokens, _, err := parseOAuthCredential(apiKeyRaw)
+	if err != nil {
+		return err
 	}
 
-	var creds struct {
-		Tokens struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			IDToken      string `json:"id_token"`
-			ClientID     string `json:"client_id"`
-			ExpiresAt    int64  `json:"expires_at"`
-		} `json:"tokens"`
-	}
-	if json.Unmarshal([]byte(apiKey), &creds) != nil {
-		return fmt.Errorf("invalid oauth credential json")
-	}
-
-	if creds.Tokens.RefreshToken == "" {
+	accessToken := stringValue(tokens["access_token"])
+	refreshToken := stringValue(tokens["refresh_token"])
+	idToken := stringValue(tokens["id_token"])
+	clientID := stringValue(tokens["client_id"])
+	if refreshToken == "" {
 		return fmt.Errorf("no refresh_token in credential")
 	}
 
-	clientID := creds.Tokens.ClientID
 	if clientID == "" {
-		clientID = extractClientID(creds.Tokens.AccessToken)
+		clientID = extractClientID(accessToken)
 	}
 	if clientID == "" {
 		return fmt.Errorf("cannot extract client_id from access_token")
@@ -151,7 +164,7 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 	form := url.Values{
 		"client_id":     {clientID},
 		"grant_type":    {"refresh_token"},
-		"refresh_token": {creds.Tokens.RefreshToken},
+		"refresh_token": {refreshToken},
 		"scope":         {"openid profile email"},
 	}
 	req, err := http.NewRequest("POST", codexTokenURL, strings.NewReader(form.Encode()))
@@ -161,11 +174,7 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	transport := SharedTransport()
-	if proxyURL != "" {
-		transport = NewTransportWithProxy(proxyURL)
-	}
-	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	client := newCodexTokenHTTPClient(proxyURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("refresh token request: %w", err)
@@ -185,47 +194,213 @@ func refreshCodexToken(store TokenRefresherStore, providerID int, proxyURL strin
 		return fmt.Errorf("refresh response missing access_token")
 	}
 
-	newTokens := map[string]interface{}{
-		"access_token":  result.AccessToken,
-		"refresh_token": creds.Tokens.RefreshToken,
-		"id_token":      creds.Tokens.IDToken,
-		"client_id":     clientID,
-		"expires_at":    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UnixMilli(),
-	}
+	newRefreshToken := refreshToken
 	if result.RefreshToken != "" {
-		newTokens["refresh_token"] = result.RefreshToken
+		newRefreshToken = result.RefreshToken
 	}
+	newIDToken := idToken
 	if result.IDToken != "" {
-		newTokens["id_token"] = result.IDToken
+		newIDToken = result.IDToken
 	}
 
-	// 统一使用新版 codex-login 格式存储
-	var newAPIKeyData map[string]interface{}
-	if isNewFormat {
-		// 保持原有 email/account_id/user_id/plan_type，只更新 credential
-		var orig map[string]interface{}
-		json.Unmarshal([]byte(apiKeyRaw), &orig)
-		orig["credential"] = map[string]interface{}{"tokens": newTokens}
-		newAPIKeyData = orig
-	} else {
-		// 旧格式迁移到新格式（email 等信息暂缺）
-		newAPIKeyData = map[string]interface{}{
-			"credential": map[string]interface{}{"tokens": newTokens},
-		}
+	newAPIKey, err := buildRefreshedOAuthCredential(store, providerID, refreshToken, result.AccessToken, newRefreshToken, newIDToken, clientID, result.ExpiresIn)
+	if err != nil {
+		return err
 	}
-
-	newAPIKey, _ := json.Marshal(newAPIKeyData)
-	if err := store.UpdateProviderAPIKey(providerID, string(newAPIKey)); err != nil {
+	if err := updateProviderAPIKeyCAS(store, providerID, newAPIKey, refreshToken); err != nil {
 		return fmt.Errorf("update provider api key: %w", err)
 	}
 
 	if updater != nil {
 		if err := updater.SetProviderAPIKey(providerID, result.AccessToken); err != nil {
-			slog.Warn("set_provider_api_key_in_memory_failed", "provider_id", providerID, "error", err)
+			return fmt.Errorf("set provider api key in memory: %w", err)
 		}
 	}
 
 	slog.Info("oauth_token_refreshed", "provider_id", providerID,
 		"expires_in", result.ExpiresIn)
 	return nil
+}
+
+func buildRefreshedOAuthCredential(store TokenRefresherStore, providerID int, usedRefreshToken, accessToken, refreshToken, idToken, clientID string, expiresIn int) (string, error) {
+	apiKeyRaw, err := store.GetProviderAPIKey(providerID)
+	if err != nil {
+		return "", fmt.Errorf("get provider api key: %w", err)
+	}
+	root, tokens, isNewFormat, err := parseOAuthCredential(apiKeyRaw)
+	if err != nil {
+		return "", err
+	}
+	currentRefreshToken := stringValue(tokens["refresh_token"])
+	if currentRefreshToken != "" && currentRefreshToken != usedRefreshToken {
+		return "", fmt.Errorf("oauth credential changed during refresh")
+	}
+
+	mergedTokens := cloneMap(tokens)
+	mergedTokens["access_token"] = accessToken
+	mergedTokens["refresh_token"] = refreshToken
+	if idToken != "" {
+		mergedTokens["id_token"] = idToken
+	}
+	mergedTokens["client_id"] = clientID
+	mergedTokens["expires_at"] = time.Now().Add(time.Duration(expiresIn) * time.Second).UnixMilli()
+
+	if isNewFormat {
+		credential, _ := root["credential"].(map[string]interface{})
+		if credential == nil {
+			credential = map[string]interface{}{}
+		}
+		credential["tokens"] = mergedTokens
+		root["credential"] = credential
+	} else {
+		delete(root, "tokens")
+		root["credential"] = map[string]interface{}{"tokens": mergedTokens}
+	}
+
+	newAPIKey, err := json.Marshal(root)
+	if err != nil {
+		return "", fmt.Errorf("marshal credential: %w", err)
+	}
+	return string(newAPIKey), nil
+}
+
+func updateProviderAPIKeyCAS(store TokenRefresherStore, providerID int, newAPIKey string, usedRefreshToken string) error {
+	casStore, ok := store.(tokenRefresherCASStore)
+	if !ok {
+		return store.UpdateProviderAPIKey(providerID, newAPIKey)
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		current, err := casStore.GetProviderAPIKey(providerID)
+		if err != nil {
+			return err
+		}
+		rebuilt, err := mergeRefreshedCredentialIntoCurrent(current, newAPIKey, usedRefreshToken)
+		if err != nil {
+			return err
+		}
+		updated, err := casStore.UpdateProviderAPIKeyIfCurrent(providerID, current, rebuilt)
+		if err != nil {
+			return err
+		}
+		if updated {
+			return nil
+		}
+	}
+	return fmt.Errorf("provider api key changed too many times")
+}
+
+func mergeRefreshedCredentialIntoCurrent(currentAPIKey, refreshedAPIKey string, usedRefreshToken string) (string, error) {
+	currentRoot, currentTokens, currentIsNew, err := parseOAuthCredential(currentAPIKey)
+	if err != nil {
+		return "", err
+	}
+	currentRefreshToken := stringValue(currentTokens["refresh_token"])
+	if currentRefreshToken != "" && currentRefreshToken != usedRefreshToken {
+		return "", fmt.Errorf("oauth credential changed during refresh")
+	}
+	_, refreshedTokens, _, err := parseOAuthCredential(refreshedAPIKey)
+	if err != nil {
+		return "", err
+	}
+	mergedTokens := cloneMap(currentTokens)
+	for _, key := range []string{"access_token", "refresh_token", "id_token", "client_id", "expires_at"} {
+		if value, ok := refreshedTokens[key]; ok {
+			mergedTokens[key] = value
+		}
+	}
+	if currentIsNew {
+		credential, _ := currentRoot["credential"].(map[string]interface{})
+		if credential == nil {
+			credential = map[string]interface{}{}
+		}
+		credential["tokens"] = mergedTokens
+		currentRoot["credential"] = credential
+	} else {
+		delete(currentRoot, "tokens")
+		currentRoot["credential"] = map[string]interface{}{"tokens": mergedTokens}
+	}
+	b, err := json.Marshal(currentRoot)
+	if err != nil {
+		return "", fmt.Errorf("marshal credential: %w", err)
+	}
+	return string(b), nil
+}
+
+func parseOAuthCredential(apiKey string) (root map[string]interface{}, tokens map[string]interface{}, isNewFormat bool, err error) {
+	if json.Unmarshal([]byte(apiKey), &root) != nil {
+		return nil, nil, false, fmt.Errorf("invalid oauth credential json")
+	}
+	if t, ok := root["tokens"].(map[string]interface{}); ok {
+		return root, t, false, nil
+	}
+	if cr, ok := root["credential"].(map[string]interface{}); ok {
+		if t, ok := cr["tokens"].(map[string]interface{}); ok {
+			return root, t, true, nil
+		}
+		return nil, nil, true, fmt.Errorf("invalid oauth credential json")
+	}
+	return nil, nil, false, fmt.Errorf("invalid oauth credential json")
+}
+
+func cloneMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func stringValue(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
+func OAuthAccessTokenExpiresAt(apiKey string) (time.Time, bool) {
+	tokens, _ := OAuthTokensJSON(apiKey)
+	if tokens == nil {
+		return time.Time{}, false
+	}
+	raw, ok := tokens["expires_at"]
+	if !ok {
+		return time.Time{}, false
+	}
+
+	var n int64
+	switch v := raw.(type) {
+	case float64:
+		n = int64(v)
+	case int64:
+		n = v
+	case int:
+		n = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return time.Time{}, false
+		}
+		n = parsed
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t, true
+		}
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		n = parsed
+	default:
+		return time.Time{}, false
+	}
+	if n <= 0 {
+		return time.Time{}, false
+	}
+	if n > 1_000_000_000_000 {
+		return time.UnixMilli(n), true
+	}
+	return time.Unix(n, 0), true
+}
+
+func OAuthAccessTokenExpiresSoon(apiKey string, now time.Time, skew time.Duration) bool {
+	expiresAt, ok := OAuthAccessTokenExpiresAt(apiKey)
+	return ok && !expiresAt.After(now.Add(skew))
 }

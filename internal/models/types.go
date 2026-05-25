@@ -4,18 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 )
 
 // ContentBlock 消息内容块，支持 text、tool_use、tool_result 三种类型
 type ContentBlock struct {
-	Type      string          `json:"type"`                 // "text", "tool_use", "tool_result"
-	Text      string          `json:"text,omitempty"`       // text 内容
-	ID        string          `json:"id,omitempty"`         // tool_use id
-	Name      string          `json:"name,omitempty"`       // tool_use name / function name
-	Input     json.RawMessage `json:"input,omitempty"`      // tool_use input (JSON object)
+	Type      string          `json:"type"`                  // "text", "tool_use", "tool_result"
+	Text      string          `json:"text,omitempty"`        // text 内容
+	ID        string          `json:"id,omitempty"`          // tool_use id
+	Name      string          `json:"name,omitempty"`        // tool_use name / function name
+	Input     json.RawMessage `json:"input,omitempty"`       // tool_use input (JSON object)
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result: 引用的 tool_use id
-	Content   json.RawMessage `json:"content,omitempty"`    // tool_result: 结果内容
-	IsError   bool            `json:"is_error,omitempty"`   // tool_result: 是否为错误
+	Content   json.RawMessage `json:"content,omitempty"`     // tool_result: 结果内容
+	IsError   bool            `json:"is_error,omitempty"`    // tool_result: 是否为错误
 }
 
 // UnifiedMessage 统一消息格式
@@ -151,6 +152,11 @@ func RawResponseBodyFromContext(ctx context.Context) io.ReadCloser {
 
 func WithRawProxy(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyRawProxy, true)
+}
+
+func RawProxyFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyRawProxy).(bool)
+	return v
 }
 
 // UnifiedUsage 统一用量信息

@@ -25,6 +25,11 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		c.SetClientBody(string(bodyBytes))
 	}
 
+	if models.RawProxyFromContext(r.Context()) {
+		g.handleRawResponsesProxy(w, r, bodyBytes)
+		return
+	}
+
 	var respReq translate.ResponsesReq
 	if err := json.Unmarshal(bodyBytes, &respReq); err != nil {
 		slog.Warn("invalid_responses_request", "remote", r.RemoteAddr, "body", string(bodyBytes), "error", err)

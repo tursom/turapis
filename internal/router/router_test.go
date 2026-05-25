@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/models"
@@ -14,22 +16,34 @@ import (
 )
 
 type testProvider struct {
-	name string
-	id   int
+	name   string
+	id     int
+	apiKey string
 
-	quota          map[string]interface{}
-	completionResp *models.UnifiedResponse
-	completionErr  error
-	streamEvents   <-chan models.UnifiedStreamEvent
-	streamErr      error
-	rawResp        *http.Response
-	rawErr         error
+	quota           map[string]interface{}
+	completionResp  *models.UnifiedResponse
+	completionErr   error
+	streamEvents    <-chan models.UnifiedStreamEvent
+	streamErr       error
+	rawResp         *http.Response
+	rawErr          error
+	completionFn    func(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error)
+	streamFn        func(context.Context, *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error)
+	listModelsFn    func(context.Context) ([]models.ModelInfo, error)
+	rawFn           func(context.Context, []byte) (*http.Response, error)
+	completionCalls int
+	streamCalls     int
+	rawCalls        int
 }
 
 func (p *testProvider) Name() string { return p.name }
-func (p *testProvider) ID() int    { return p.id }
+func (p *testProvider) ID() int      { return p.id }
 
-func (p *testProvider) ChatCompletion(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
+func (p *testProvider) ChatCompletion(ctx context.Context, req *models.UnifiedRequest) (*models.UnifiedResponse, error) {
+	p.completionCalls++
+	if p.completionFn != nil {
+		return p.completionFn(ctx, req)
+	}
 	if p.completionErr != nil {
 		return nil, p.completionErr
 	}
@@ -39,7 +53,11 @@ func (p *testProvider) ChatCompletion(context.Context, *models.UnifiedRequest) (
 	return &models.UnifiedResponse{ID: "resp_test", Model: "gpt-test", Role: "assistant", Content: "ok"}, nil
 }
 
-func (p *testProvider) ChatCompletionStream(context.Context, *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
+func (p *testProvider) ChatCompletionStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
+	p.streamCalls++
+	if p.streamFn != nil {
+		return p.streamFn(ctx, req)
+	}
 	if p.streamErr != nil {
 		return nil, p.streamErr
 	}
@@ -51,17 +69,26 @@ func (p *testProvider) ChatCompletionStream(context.Context, *models.UnifiedRequ
 	return ch, nil
 }
 
-func (p *testProvider) ListModels(context.Context) ([]models.ModelInfo, error) {
+func (p *testProvider) ListModels(ctx context.Context) ([]models.ModelInfo, error) {
+	if p.listModelsFn != nil {
+		return p.listModelsFn(ctx)
+	}
 	return nil, nil
 }
 
 func (p *testProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
 
+func (p *testProvider) SetAPIKey(key string) { p.apiKey = key }
+
 func (p *testProvider) SupportsTool(string) bool { return true }
 
 func (p *testProvider) LastQuota() map[string]interface{} { return p.quota }
 
-func (p *testProvider) RawResponsesStream(context.Context, []byte) (*http.Response, error) {
+func (p *testProvider) RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error) {
+	p.rawCalls++
+	if p.rawFn != nil {
+		return p.rawFn(ctx, rawBody)
+	}
 	if p.rawErr != nil {
 		return nil, p.rawErr
 	}
@@ -80,13 +107,17 @@ func setupRouterTest(t *testing.T) (*config.Store, *providerpkg.Registry, *Route
 }
 
 func registerTestProvider(t *testing.T, store *config.Store, registry *providerpkg.Registry, p *testProvider, priority int) {
+	registerTestProviderWithCredential(t, store, registry, p, priority, "oauth", `{"tokens":{"access_token":"test-token"}}`)
+}
+
+func registerTestProviderWithCredential(t *testing.T, store *config.Store, registry *providerpkg.Registry, p *testProvider, priority int, authMode string, apiKey string) {
 	t.Helper()
 	stored := &config.Provider{
 		Name:           p.name,
 		BaseURL:        "https://example.test",
-		APIKey:         `{"tokens":{"access_token":"test-token"}}`,
+		APIKey:         apiKey,
 		Protocol:       "openai",
-		AuthMode:       "oauth",
+		AuthMode:       authMode,
 		Priority:       priority,
 		Enabled:        true,
 		SupportedTools: "[]",
@@ -95,6 +126,11 @@ func registerTestProvider(t *testing.T, store *config.Store, registry *providerp
 		t.Fatalf("create provider %s: %v", p.name, err)
 	}
 	p.id = stored.ID
+	if authMode == "oauth" {
+		p.SetAPIKey(providerpkg.ExtractOAuthAccessToken(apiKey))
+	} else {
+		p.SetAPIKey(apiKey)
+	}
 	registry.Register(p)
 }
 
@@ -311,5 +347,158 @@ func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
 	}
 	if result.QuotaAfter != result.QuotaBefore {
 		t.Fatalf("quota after = %q, want unchanged quota %q", result.QuotaAfter, result.QuotaBefore)
+	}
+}
+
+func TestRouteNonStreamRefreshesExpiringOAuthBeforeRequest(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{name: "provider-expiring"}
+	p.completionFn = func(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
+		if p.apiKey != "fresh-token" {
+			t.Fatalf("expected refreshed api key, got %q", p.apiKey)
+		}
+		return &models.UnifiedResponse{ID: "resp_fresh", Model: "gpt-test", Role: "assistant", Content: "ok"}, nil
+	}
+	expiresSoon := time.Now().Add(2 * time.Minute).UnixMilli()
+	registerTestProviderWithCredential(t, store, registry, p, 10, "oauth",
+		`{"tokens":{"access_token":"stale-token","refresh_token":"rt","expires_at":`+strconv.FormatInt(expiresSoon, 10)+`}}`)
+	oldRefresh := refreshOAuthToken
+	refreshCalls := 0
+	refreshOAuthToken = func(store providerpkg.TokenRefresherStore, providerID int, proxyURL string, updater providerpkg.ProviderKeyUpdater) error {
+		refreshCalls++
+		return updater.SetProviderAPIKey(providerID, "fresh-token")
+	}
+	t.Cleanup(func() { refreshOAuthToken = oldRefresh })
+
+	result, err := r.Route(context.Background(), &models.UnifiedRequest{Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if result.UsedProvider != p.name {
+		t.Fatalf("used provider = %s, want %s", result.UsedProvider, p.name)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if p.completionCalls != 1 {
+		t.Fatalf("completion calls = %d, want 1", p.completionCalls)
+	}
+}
+
+func TestRouteNonStreamRetriesAfterOAuthRefresh(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{name: "provider-auth-retry"}
+	p.completionFn = func(context.Context, *models.UnifiedRequest) (*models.UnifiedResponse, error) {
+		if p.apiKey == "fresh-token" {
+			return &models.UnifiedResponse{ID: "resp_retry", Model: "gpt-test", Role: "assistant", Content: "ok"}, nil
+		}
+		return nil, &models.UpstreamError{StatusCode: http.StatusUnauthorized, Body: []byte("expired")}
+	}
+	registerTestProviderWithCredential(t, store, registry, p, 10, "oauth",
+		`{"tokens":{"access_token":"stale-token","refresh_token":"rt"}}`)
+	oldRefresh := refreshOAuthToken
+	refreshCalls := 0
+	refreshOAuthToken = func(store providerpkg.TokenRefresherStore, providerID int, proxyURL string, updater providerpkg.ProviderKeyUpdater) error {
+		refreshCalls++
+		return updater.SetProviderAPIKey(providerID, "fresh-token")
+	}
+	t.Cleanup(func() { refreshOAuthToken = oldRefresh })
+
+	result, err := r.Route(context.Background(), &models.UnifiedRequest{Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if result.UsedProvider != p.name {
+		t.Fatalf("used provider = %s, want %s", result.UsedProvider, p.name)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if p.completionCalls != 2 {
+		t.Fatalf("completion calls = %d, want 2", p.completionCalls)
+	}
+}
+
+func TestRouteStreamRetriesAfterOAuthRefresh(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{name: "provider-stream-auth-retry"}
+	p.streamFn = func(context.Context, *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
+		if p.apiKey != "fresh-token" {
+			return nil, &models.UpstreamError{StatusCode: http.StatusForbidden, Body: []byte("expired")}
+		}
+		ch := make(chan models.UnifiedStreamEvent, 1)
+		ch <- models.UnifiedStreamEvent{Type: models.StreamEventStop}
+		close(ch)
+		return ch, nil
+	}
+	registerTestProviderWithCredential(t, store, registry, p, 10, "oauth",
+		`{"tokens":{"access_token":"stale-token","refresh_token":"rt"}}`)
+	oldRefresh := refreshOAuthToken
+	refreshCalls := 0
+	refreshOAuthToken = func(store providerpkg.TokenRefresherStore, providerID int, proxyURL string, updater providerpkg.ProviderKeyUpdater) error {
+		refreshCalls++
+		return updater.SetProviderAPIKey(providerID, "fresh-token")
+	}
+	t.Cleanup(func() { refreshOAuthToken = oldRefresh })
+
+	result, err := r.RouteStream(context.Background(), &models.UnifiedRequest{Model: "gpt-test", Stream: true})
+	if err != nil {
+		t.Fatalf("route stream: %v", err)
+	}
+	if result.ProviderName != p.name {
+		t.Fatalf("provider name = %s, want %s", result.ProviderName, p.name)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if p.streamCalls != 2 {
+		t.Fatalf("stream calls = %d, want 2", p.streamCalls)
+	}
+}
+
+func TestRouteRawStreamRetriesAfterOAuthRefresh(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{name: "provider-raw-auth-retry"}
+	p.rawFn = func(context.Context, []byte) (*http.Response, error) {
+		if p.apiKey != "fresh-token" {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("expired")),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     quotaHeader("13"),
+			Body:       io.NopCloser(strings.NewReader("data: ok\n\n")),
+		}, nil
+	}
+	registerTestProviderWithCredential(t, store, registry, p, 10, "oauth",
+		`{"tokens":{"access_token":"stale-token","refresh_token":"rt"}}`)
+	oldRefresh := refreshOAuthToken
+	refreshCalls := 0
+	refreshOAuthToken = func(store providerpkg.TokenRefresherStore, providerID int, proxyURL string, updater providerpkg.ProviderKeyUpdater) error {
+		refreshCalls++
+		return updater.SetProviderAPIKey(providerID, "fresh-token")
+	}
+	t.Cleanup(func() { refreshOAuthToken = oldRefresh })
+
+	result, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
+	if err != nil {
+		t.Fatalf("route raw stream: %v", err)
+	}
+	defer result.Body.Close()
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "data: ok\n\n" {
+		t.Fatalf("body = %q, want raw stream body", string(body))
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if p.rawCalls != 2 {
+		t.Fatalf("raw calls = %d, want 2", p.rawCalls)
 	}
 }

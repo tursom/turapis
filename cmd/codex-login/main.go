@@ -49,8 +49,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	flow := codexauth.NewAutoLoginFlow(cfg)
-	authURL, waitFn, err := flow.StartLogin(ctx)
+	authURL, waitFn, err := codexauth.StartLogin(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start login: %v\n", err)
 		os.Exit(1)

@@ -891,36 +891,61 @@ func (s *Store) UpdateProviderAPIKey(id int, apiKey string) error {
 	return nil
 }
 
+func (s *Store) UpdateProviderAPIKeyIfCurrent(id int, currentAPIKey string, newAPIKey string) (bool, error) {
+	result, err := s.DB.Exec(
+		"UPDATE providers SET api_key = ?, updated_at = datetime('now') WHERE id = ? AND api_key = ?",
+		newAPIKey, id, currentAPIKey,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update provider api key: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
 // SaveProviderQuota 将配额数据存入 provider 的 api_key JSON 中的 tokens.quota 字段。
 // 兼容新旧两种格式：{"tokens":{...}} 和 {"credential": {"tokens":{...}}}。
 func (s *Store) SaveProviderQuota(id int, quotaJSON []byte) error {
-	apiKey, err := s.GetProviderAPIKey(id)
-	if err != nil {
-		return fmt.Errorf("get api_key: %w", err)
-	}
-	var creds map[string]interface{}
-	if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
-		return nil
+	var quotaObj interface{}
+	if err := json.Unmarshal(quotaJSON, &quotaObj); err != nil {
+		return fmt.Errorf("unmarshal quota: %w", err)
 	}
 
-	tokens := resolveTokensMap(creds)
-	if tokens == nil {
-		tokens = make(map[string]interface{})
-		if _, ok := creds["credential"]; ok {
-			creds["credential"].(map[string]interface{})["tokens"] = tokens
-		} else {
-			creds["credential"] = map[string]interface{}{"tokens": tokens}
+	for attempt := 0; attempt < 5; attempt++ {
+		apiKey, err := s.GetProviderAPIKey(id)
+		if err != nil {
+			return fmt.Errorf("get api_key: %w", err)
+		}
+		var creds map[string]interface{}
+		if err := json.Unmarshal([]byte(apiKey), &creds); err != nil {
+			return nil
+		}
+
+		tokens := resolveTokensMap(creds)
+		if tokens == nil {
+			tokens = make(map[string]interface{})
+			credential, ok := creds["credential"].(map[string]interface{})
+			if ok {
+				credential["tokens"] = tokens
+			} else {
+				creds["credential"] = map[string]interface{}{"tokens": tokens}
+			}
+		}
+		tokens["quota"] = quotaObj
+
+		newAPIKey, err := json.Marshal(creds)
+		if err != nil {
+			return fmt.Errorf("marshal credential: %w", err)
+		}
+		updated, err := s.UpdateProviderAPIKeyIfCurrent(id, apiKey, string(newAPIKey))
+		if err != nil {
+			return err
+		}
+		if updated {
+			return nil
 		}
 	}
-	var quotaObj interface{}
-	json.Unmarshal(quotaJSON, &quotaObj)
-	tokens["quota"] = quotaObj
-
-	newAPIKey, err := json.Marshal(creds)
-	if err != nil {
-		return fmt.Errorf("marshal credential: %w", err)
-	}
-	return s.UpdateProviderAPIKey(id, string(newAPIKey))
+	return fmt.Errorf("provider api key changed while saving quota")
 }
 
 func resolveTokensMap(creds map[string]interface{}) map[string]interface{} {
@@ -1363,5 +1388,3 @@ func randomHex(n int) string {
 	}
 	return hex.EncodeToString(b)
 }
-
-

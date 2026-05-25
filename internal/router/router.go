@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -61,28 +62,60 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 	if err != nil {
 		return nil, err
 	}
-	for i, p := range chain {
+	attemptNum := 0
+	for _, p := range chain {
 		type rawStreamer interface {
 			RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error)
 		}
 		if rs, ok := p.(rawStreamer); ok {
+			if _, err := r.refreshOAuthProviderIfNeeded(p, false); err != nil {
+				slog.Warn("oauth_preemptive_refresh_failed", "provider", p.Name(), "error", err)
+			}
+			attemptNum++
 			start := time.Now()
 			quotaBefore := r.getProviderQuotaJSON(p.ID())
 			resp, err := rs.RawResponsesStream(ctx, rawBody)
 			duration := time.Since(start)
 			if err != nil {
-				recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, i+1)
+				recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, attemptNum)
 				continue
 			}
 			r.saveQuotaFromHeaders(p.ID(), resp.Header)
 			quotaAfter := r.getProviderQuotaJSON(p.ID())
 			if resp.StatusCode != 200 {
-				recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, i+1)
+				recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, attemptNum)
 				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
 				resp.Body.Close()
+				if isAuthStatus(resp.StatusCode) {
+					if refreshed, refreshErr := r.refreshOAuthProviderIfNeeded(p, true); refreshErr == nil && refreshed {
+						attemptNum++
+						start = time.Now()
+						quotaBefore = r.getProviderQuotaJSON(p.ID())
+						resp, err = rs.RawResponsesStream(ctx, rawBody)
+						duration = time.Since(start)
+						if err != nil {
+							recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, attemptNum)
+							continue
+						}
+						r.saveQuotaFromHeaders(p.ID(), resp.Header)
+						quotaAfter = r.getProviderQuotaJSON(p.ID())
+						if resp.StatusCode == 200 {
+							recordAttempt(ctx, p.Name(), resp.StatusCode, nil, duration, quotaBefore, quotaAfter, true, attemptNum)
+							return &RawStreamResult{
+								Body:         resp.Body,
+								ProviderName: p.Name(),
+								QuotaBefore:  quotaBefore,
+								QuotaAfter:   quotaAfter,
+							}, nil
+						}
+						recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, attemptNum)
+						_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
+						resp.Body.Close()
+					}
+				}
 				continue
 			}
-			recordAttempt(ctx, p.Name(), resp.StatusCode, nil, duration, quotaBefore, quotaAfter, true, i+1)
+			recordAttempt(ctx, p.Name(), resp.StatusCode, nil, duration, quotaBefore, quotaAfter, true, attemptNum)
 			return &RawStreamResult{
 				Body:         resp.Body,
 				ProviderName: p.Name(),
