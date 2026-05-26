@@ -279,23 +279,27 @@ export default function AccessLogs() {
         alignItems: 'flex-end',
       }}>
         <label style={{ fontSize: 12, color: '#666' }}>
-          开始时间
+          时间范围
+          <select value="" onChange={e => { const v = Number(e.target.value); if (v > 0) { setQuickRange(v); e.target.value = ''; } }}
+            style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }}>
+            <option value="">自定义</option>
+            <option value="1">最近 1 小时</option>
+            <option value="12">最近 12 小时</option>
+            <option value="24">最近 24 小时</option>
+            <option value="72">最近 3 天</option>
+            <option value="168">最近 7 天</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 12, color: '#666' }}>
+          开始
           <input type="datetime-local" value={filterFrom} onChange={e => setFilterFrom(e.target.value)}
             style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }} />
         </label>
         <label style={{ fontSize: 12, color: '#666' }}>
-          结束时间
+          结束
           <input type="datetime-local" value={filterTo} onChange={e => setFilterTo(e.target.value)}
             style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }} />
         </label>
-        <span style={{ fontSize: 12, color: '#999', alignSelf: 'flex-end', marginBottom: 2, marginRight: -4 }}>快捷：</span>
-        {[{ h: 1, label: '1小时' }, { h: 12, label: '12小时' }, { h: 24, label: '24小时' }, { h: 72, label: '3天' }, { h: 168, label: '7天' }].map(r => (
-          <button key={r.h} onClick={() => setQuickRange(r.h)}
-            style={{
-              padding: '2px 8px', border: '1px solid #d9d9d9', borderRadius: 4, background: '#fff',
-              cursor: 'pointer', fontSize: 12, color: '#666', whiteSpace: 'nowrap',
-            }}>{r.label}</button>
-        ))}
         <label style={{ fontSize: 12, color: '#666' }}>
           API Key
           <select value={filterKeyId ?? ''} onChange={e => setFilterKeyId(e.target.value ? Number(e.target.value) : undefined)}
