@@ -49,13 +49,18 @@ export default function AccessLogs() {
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState('')
 
+  const [quickRange, setQuickRangeState] = useState('')
+
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
   const setQuickRange = (hours: number) => {
     const now = new Date()
     const from = new Date(now.getTime() - hours * 60 * 60 * 1000)
-    setFilterFrom(from.toISOString().slice(0, 16))
-    setFilterTo(now.toISOString().slice(0, 16))
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    setFilterFrom(fmt(from))
+    setFilterTo(fmt(now))
+    setQuickRangeState('')
   }
 
   useEffect(() => {
@@ -280,7 +285,7 @@ export default function AccessLogs() {
       }}>
         <label style={{ fontSize: 12, color: '#666' }}>
           时间范围
-          <select value="" onChange={e => { const v = Number(e.target.value); if (v > 0) { setQuickRange(v); e.target.value = ''; } }}
+          <select value={quickRange} onChange={e => { const v = e.target.value; if (v) { setQuickRange(Number(v)); } }}
             style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }}>
             <option value="">自定义</option>
             <option value="1">最近 1 小时</option>
