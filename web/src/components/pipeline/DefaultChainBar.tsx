@@ -260,10 +260,10 @@ export default function DefaultChainBar({ providers, groups, onGroupsChange }: D
                     <HolderOutlined style={{ color: '#bfbfbf', fontSize: 10, flexShrink: 0 }} />
                     <Text style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999', fontSize: 10, marginRight: 4 }}>#{provider.id}</span>{provider.name}</Text>
                     <Tag
-                      color={provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : 'purple'}
+                      color={provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : provider.protocol === 'codex' ? 'green' : 'purple'}
                       style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px', flexShrink: 0 }}
                     >
-                      {provider.auth_mode === 'oauth' ? 'OAuth' : provider.protocol === 'openai' ? 'OpenAI' : 'Anthropic'}
+                      {provider.auth_mode === 'oauth' ? 'OAuth' : provider.protocol === 'openai' ? 'OpenAI' : provider.protocol === 'codex' ? 'Codex' : 'Anthropic'}
                     </Tag>
                     <Tag color={provider.auth_mode === 'oauth' ? 'orange' : 'default'} style={{ margin: 0, fontSize: 9, lineHeight: '14px', padding: '0 3px', flexShrink: 0 }}>
                       {provider.auth_mode === 'oauth' ? 'OAuth' : 'API'}

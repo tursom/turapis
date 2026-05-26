@@ -43,8 +43,8 @@ function ProviderNode({ data, selected }: NodeProps) {
 
   const protocolLabel = provider.auth_mode === 'oauth'
     ? 'OAuth'
-    : provider.protocol === 'openai' ? 'OpenAI' : 'Anthropic'
-  const protocolColor = provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : 'purple'
+    : provider.protocol === 'openai' ? 'OpenAI' : provider.protocol === 'codex' ? 'Codex' : 'Anthropic'
+  const protocolColor = provider.auth_mode === 'oauth' ? 'cyan' : provider.protocol === 'openai' ? 'blue' : provider.protocol === 'codex' ? 'green' : 'purple'
   const authLabel = provider.auth_mode === 'oauth' ? 'OAuth' : 'API Key'
   const authColor = provider.auth_mode === 'oauth' ? 'orange' : 'default'
 

@@ -23,6 +23,7 @@ import (
 type OpenAIProvider struct {
 	id             int
 	name           string
+	protocol       models.ProtocolType
 	url            string
 	apiKey         atomic.Value
 	client         *http.Client
@@ -37,6 +38,15 @@ type OpenAIProvider struct {
 }
 
 func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
+	return newOpenAIProvider(id, name, baseURL, apiKey, supportedTools, proxyURL, models.ProtocolOpenAI)
+}
+
+// NewCodex creates an OpenAIProvider with codex protocol for codex-specific routing.
+func NewCodex(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
+	return newOpenAIProvider(id, name, baseURL, apiKey, supportedTools, proxyURL, models.ProtocolCodex)
+}
+
+func newOpenAIProvider(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string, protocol models.ProtocolType) *OpenAIProvider {
 	st := make(map[string]bool, len(supportedTools))
 	for _, t := range supportedTools {
 		st[t] = true
@@ -46,9 +56,10 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 		transport = provider.NewTransportWithProxy(proxyURL)
 	}
 	p := &OpenAIProvider{
-		id:   id,
-		name: name,
-		url:  strings.TrimSuffix(baseURL, "/"),
+		id:       id,
+		name:     name,
+		protocol: protocol,
+		url:      strings.TrimSuffix(baseURL, "/"),
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   300 * time.Second,
@@ -61,7 +72,7 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 
 func (p *OpenAIProvider) Name() string                  { return p.name }
 func (p *OpenAIProvider) ID() int                       { return p.id }
-func (p *OpenAIProvider) Protocol() models.ProtocolType { return models.ProtocolOpenAI }
+func (p *OpenAIProvider) Protocol() models.ProtocolType { return p.protocol }
 func (p *OpenAIProvider) SetAPIKey(key string)          { p.apiKey.Store(key) }
 func (p *OpenAIProvider) SupportsTool(name string) bool {
 	if p.supportedTools == nil {
@@ -234,7 +245,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req *models.Unified
 // 并将原始 SSE 响应体存入 lastRawBody，由 TakeRawBody 交出。
 // 上游 SSE 原样透传，避免经过 UnifiedStreamEvent 解析-重建丢失事件。
 func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *models.UnifiedRequest) (<-chan models.UnifiedStreamEvent, error) {
-	if p.isJWT() && strings.HasPrefix(req.OriginalPath, "/v1/responses") {
+	if p.Protocol() == models.ProtocolCodex && strings.HasPrefix(req.OriginalPath, "/v1/responses") {
 		if raw := models.RawBodyFromContext(ctx); len(raw) > 0 {
 			// 直接调用 RawResponsesStream 获取上游原始 SSE 响应
 			resp, err := p.RawResponsesStream(ctx, raw)

@@ -24,8 +24,8 @@ func (a *Admin) createProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name, base_url, api_key are required")
 		return
 	}
-	if p.Protocol != "openai" && p.Protocol != "anthropic" {
-		writeError(w, http.StatusBadRequest, "protocol must be 'openai' or 'anthropic'")
+	if p.Protocol != "openai" && p.Protocol != "anthropic" && p.Protocol != "codex" {
+		writeError(w, http.StatusBadRequest, "protocol must be 'openai', 'anthropic', or 'codex'")
 		return
 	}
 
@@ -132,6 +132,12 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 	switch p.Protocol {
 	case "openai":
 		op := openai.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
+			op.SetSearXNG(searxngURL)
+		}
+		prov = op
+	case "codex":
+		op := openai.NewCodex(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
 		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 			op.SetSearXNG(searxngURL)
 		}

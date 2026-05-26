@@ -384,3 +384,17 @@ func TestDoRequestClearsStaleQuotaOnTransportError(t *testing.T) {
 		t.Fatalf("expected stale quota to be cleared, got %#v", got)
 	}
 }
+
+func TestNew_HasOpenAIProtocol(t *testing.T) {
+	p := New(1, "test", "https://api.openai.com", "sk-test", nil, "")
+	if p.Protocol() != models.ProtocolOpenAI {
+		t.Fatalf("New() provider should have protocol=openai, got %s", p.Protocol())
+	}
+}
+
+func TestNewCodex_HasCodexProtocol(t *testing.T) {
+	p := NewCodex(2, "codex-upstream", "https://chatgpt.com/backend-api/codex", "eyJtest", nil, "")
+	if p.Protocol() != models.ProtocolCodex {
+		t.Fatalf("NewCodex() provider should have protocol=codex, got %s", p.Protocol())
+	}
+}

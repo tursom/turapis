@@ -48,7 +48,7 @@ function formatQuota(q: QuotaInfo | undefined) {
   return <span style={{ display: 'inline-flex', flexWrap: 'nowrap', alignItems: 'flex-start' }}>{entries.map((e, i) => <QuotaBar key={i} entry={e} />)}</span>
 }
 
-  const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string; proxy: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]', proxy: '' }
+  const emptyForm: { name: string; base_url: string; api_key: string; protocol: 'openai' | 'anthropic' | 'codex'; auth_mode: string; priority: number; enabled: boolean; supported_tools: string; proxy: string } = { name: '', base_url: '', api_key: '', protocol: 'openai', auth_mode: 'api_key', priority: 100, enabled: true, supported_tools: '["web_search"]', proxy: '' }
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -216,7 +216,7 @@ export default function Providers() {
             <label>名称 <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} style={{ width: '100%' }} /></label>
             <label>接口地址 <input value={form.base_url} onChange={e => setForm({...form, base_url: e.target.value})} style={{ width: '100%' }} /></label>
             <label>API Key <input value={form.api_key} onChange={e => setForm({...form, api_key: e.target.value})} style={{ width: '100%' }} /></label>
-            <label>协议 <select value={form.protocol} onChange={e => setForm({...form, protocol: e.target.value as 'openai' | 'anthropic'})}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+            <label>协议 <select value={form.protocol} onChange={e => setForm({...form, protocol: e.target.value as 'openai' | 'anthropic' | 'codex'})}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="codex">Codex</option></select></label>
             <label>优先级 <input type="number" value={form.priority} onChange={e => setForm({...form, priority: +e.target.value})} /></label>
             <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({...form, enabled: e.target.checked})} /> 启用</label>
             <label>支持的工具 <input value={form.supported_tools} onChange={e => setForm({...form, supported_tools: e.target.value})} placeholder='JSON array, e.g. ["web_search","code_interpreter"]' style={{ width: '100%' }} /></label>

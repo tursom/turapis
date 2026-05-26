@@ -3,7 +3,7 @@ export interface Provider {
   name: string
   base_url: string
   api_key: string
-  protocol: 'openai' | 'anthropic'
+  protocol: 'openai' | 'anthropic' | 'codex'
   priority: number
   enabled: boolean
   auth_mode: string
@@ -30,7 +30,7 @@ export interface Site {
   id: number
   name: string
   base_url: string
-  protocol: 'openai' | 'anthropic'
+  protocol: 'openai' | 'anthropic' | 'codex'
   auth_mode: string
   enabled: boolean
   created_at: number

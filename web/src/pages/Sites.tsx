@@ -3,7 +3,7 @@ import { fetchSites, createSite, updateSite, deleteSite, fetchSiteModels, addSit
 import type { Site, SiteModel } from '../api/types'
 import Modal from '../components/Modal'
 
-const emptyForm: { name: string; base_url: string; protocol: 'openai' | 'anthropic'; auth_mode: string; enabled: boolean } = { name: '', base_url: '', protocol: 'openai', auth_mode: 'api_key', enabled: true }
+const emptyForm: { name: string; base_url: string; protocol: 'openai' | 'anthropic' | 'codex'; auth_mode: string; enabled: boolean } = { name: '', base_url: '', protocol: 'openai', auth_mode: 'api_key', enabled: true }
 
 export default function Sites() {
   const [sites, setSites] = useState<Site[]>([])
@@ -157,7 +157,7 @@ export default function Sites() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <label>名称 <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} style={{ width: '100%' }} /></label>
           <label>base_url <input value={form.base_url} onChange={e => setForm({...form, base_url: e.target.value})} style={{ width: '100%' }} /></label>
-          <label>协议 <select value={form.protocol} onChange={e => setForm({...form, protocol: e.target.value as 'openai' | 'anthropic'})}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+          <label>协议 <select value={form.protocol} onChange={e => setForm({...form, protocol: e.target.value as 'openai' | 'anthropic' | 'codex'})}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="codex">Codex</option></select></label>
           <label>认证方式 <select value={form.auth_mode} onChange={e => setForm({...form, auth_mode: e.target.value})}><option value="api_key">API Key</option><option value="oauth">OAuth</option></select></label>
           <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({...form, enabled: e.target.checked})} /> 启用</label>
           <button onClick={handleSave} style={{ padding: '8px', background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>保存</button>

@@ -56,7 +56,7 @@ export default function MappingModal({ open, editing, providers, modelNames, onC
 
   const providerOptions = providers.map((p) => ({
     value: p.id,
-    label: `#${p.id} ${p.name} (${p.protocol === 'openai' ? 'OpenAI' : 'Anthropic'})`,
+    label: `#${p.id} ${p.name} (${p.protocol === 'openai' ? 'OpenAI' : p.protocol === 'codex' ? 'Codex' : 'Anthropic'})`,
   }))
 
   return (

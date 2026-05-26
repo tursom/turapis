@@ -20,8 +20,8 @@ func (a *Admin) createSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name, base_url, protocol are required")
 		return
 	}
-	if s.Protocol != "openai" && s.Protocol != "anthropic" {
-		writeError(w, http.StatusBadRequest, "protocol must be 'openai' or 'anthropic'")
+	if s.Protocol != "openai" && s.Protocol != "anthropic" && s.Protocol != "codex" {
+		writeError(w, http.StatusBadRequest, "protocol must be 'openai', 'anthropic', or 'codex'")
 		return
 	}
 	if s.AuthMode == "" {

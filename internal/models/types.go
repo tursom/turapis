@@ -243,6 +243,7 @@ type ProtocolType string
 const (
 	ProtocolOpenAI    ProtocolType = "openai"
 	ProtocolAnthropic ProtocolType = "anthropic"
+	ProtocolCodex     ProtocolType = "codex"
 )
 
 // SessionUser holds the currently authenticated user's identity extracted from a session.

@@ -1211,7 +1211,7 @@ func (s *Store) SeedBuiltinSites() error {
 			},
 		},
 		{
-			Site: Site{Name: "Codex (ChatGPT)", BaseURL: "https://chatgpt.com/backend-api/codex", Protocol: "openai", AuthMode: "oauth", Enabled: true},
+			Site: 		Site{Name: "Codex (ChatGPT)", BaseURL: "https://chatgpt.com/backend-api/codex", Protocol: "codex", AuthMode: "oauth", Enabled: true},
 			Models: []struct{ ModelID, ModelName string }{
 				{"gpt-4o", "gpt-4o"},
 				{"gpt-4o-mini", "gpt-4o-mini"},
