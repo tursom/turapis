@@ -503,6 +503,8 @@ Content-Type: application/json
 
 所有 Admin 端点挂载在 `/admin` 路径下。Response body 均为 JSON。
 
+Admin API 中所有时间字段和时间查询参数均使用 Unix 毫秒时间戳（JSON number / URL 十进制数字），不使用 RFC3339 字符串。
+
 ### 6.1 错误响应格式（通用）
 
 ```json
@@ -536,8 +538,8 @@ Content-Type: application/json
   "protocol":   "openai",
   "priority":   1,
   "enabled":    true,
-  "created_at": "2026-05-12T12:00:00Z",
-  "updated_at": "2026-05-12T12:00:00Z"
+  "created_at": 1778587200000,
+  "updated_at": 1778587200000
 }
 ```
 
@@ -557,8 +559,8 @@ HTTP 200
     "protocol":   "openai",
     "priority":   1,
     "enabled":    true,
-    "created_at": "2026-05-12T12:00:00Z",
-    "updated_at": "2026-05-12T12:00:00Z"
+    "created_at": 1778587200000,
+    "updated_at": 1778587200000
   }
 ]
 ```
@@ -580,8 +582,8 @@ HTTP 200
   "protocol":   "openai",
   "priority":   1,
   "enabled":    true,
-  "created_at": "...",
-  "updated_at": "..."
+  "created_at": 1778587200000,
+  "updated_at": 1778587200000
 }
 ```
 
@@ -641,7 +643,7 @@ HTTP 200
   "provider_id": 1,
   "priority":    100,
   "enabled":     true,
-  "created_at":  "2026-05-12T12:00:00Z"
+  "created_at":  1778587200000
 }
 ```
 
@@ -659,7 +661,7 @@ HTTP 200
     "provider_id": 1,
     "priority": 100,
     "enabled": true,
-    "created_at": "..."
+    "created_at": 1778587200000
   }
 ]
 ```

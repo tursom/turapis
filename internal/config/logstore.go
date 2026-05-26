@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +47,10 @@ func OpenLogStore(path string) (*LogStore, error) {
 	s := &LogStore{db: db}
 	s.initCounter()
 	s.initTotal()
+	if err := s.migrateAccessLogTimestampJSON(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -150,11 +155,10 @@ func (s *LogStore) Insert(log *AccessLog) error {
 	id := s.NextID()
 	log.ID = int(id)
 
-	ts, err := time.Parse(time.RFC3339, log.Timestamp)
-	if err != nil {
-		ts = time.Now()
+	if log.Timestamp <= 0 {
+		log.Timestamp = time.Now().UnixMilli()
 	}
-	tsNano := uint64(ts.UnixNano())
+	tsNano := unixMilliToNano(log.Timestamp)
 
 	jsonData, err := json.Marshal(log)
 	if err != nil {
@@ -162,7 +166,6 @@ func (s *LogStore) Insert(log *AccessLog) error {
 	}
 
 	b := s.db.NewBatch()
-	defer b.Close()
 
 	b.Set(EncodePrimaryKey(tsNano, id), jsonData, nil)
 	b.Set(EncodeIndexKey(id), EncodeTimestampValue(tsNano), nil)
@@ -185,7 +188,7 @@ func (s *LogStore) Query(q AccessLogQuery) ([]AccessLog, int, error) {
 		return s.queryByModel(&q)
 	}
 
-	noFilters := q.ApiKeyID == nil && q.Status == nil && q.StartAt == "" && q.EndAt == ""
+	noFilters := q.ApiKeyID == nil && q.Status == nil && q.StartAt == nil && q.EndAt == nil
 	if noFilters {
 		return s.queryLatest(&q)
 	}
@@ -268,9 +271,6 @@ func (s *LogStore) queryByTime(q *AccessLogQuery) ([]AccessLog, int, error) {
 		if scanned > offset && len(matches) < q.PerPage {
 			matches = append(matches, log)
 		}
-		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
-			break
-		}
 	}
 	return matches, scanned, nil
 }
@@ -326,9 +326,6 @@ func (s *LogStore) queryByModel(q *AccessLogQuery) ([]AccessLog, int, error) {
 		scanned++
 		if scanned > offset && len(matches) < q.PerPage {
 			matches = append(matches, *log)
-		}
-		if len(matches) >= q.PerPage && scanned >= offset+q.PerPage {
-			break
 		}
 	}
 
@@ -427,6 +424,138 @@ func (s *LogStore) Cleanup(retentionDays int) (int64, error) {
 
 var migrationMarkerKey = []byte{pebblePrefixMeta, 'm', 'i', 'g', 'r', 'a', 't', 'e', 'd'}
 var migrationCheckpointKey = []byte{pebblePrefixMeta, 'm', 'i', 'g', 'c', 'h', 'k'}
+var timestampJSONMigrationKey = []byte{pebblePrefixMeta, 't', 's', '_', 'm', 's'}
+
+type legacyAccessLog struct {
+	ID           int    `db:"id" json:"id"`
+	Timestamp    string `db:"timestamp" json:"timestamp"`
+	ApiKeyID     *int   `db:"api_key_id" json:"api_key_id"`
+	ApiKeyName   string `db:"api_key_name" json:"api_key_name"`
+	Method       string `db:"method" json:"method"`
+	Path         string `db:"path" json:"path"`
+	Model        string `db:"model" json:"model"`
+	StatusCode   int    `db:"status_code" json:"status_code"`
+	TokensIn     int    `db:"tokens_in" json:"tokens_in"`
+	TokensOut    int    `db:"tokens_out" json:"tokens_out"`
+	DurationMs   int    `db:"duration_ms" json:"duration_ms"`
+	RemoteIP     string `db:"remote_ip" json:"remote_ip"`
+	RequestID    string `db:"request_id" json:"request_id"`
+	ProviderName string `db:"provider_name" json:"provider_name"`
+	ErrorMsg     string `db:"error_msg" json:"error_msg"`
+	RawBody      string `db:"raw_body" json:"raw_body"`
+	RawResponse  string `db:"raw_response" json:"raw_response"`
+	ClientReq    string `db:"client_req" json:"client_req"`
+	ClientResp   string `db:"client_resp" json:"client_resp"`
+	UpstreamReq  string `db:"upstream_req" json:"upstream_req"`
+	UpstreamResp string `db:"upstream_resp" json:"upstream_resp"`
+	QuotaBefore  string `db:"quota_before" json:"quota_before"`
+	QuotaAfter   string `db:"quota_after" json:"quota_after"`
+	AttemptsJSON string `db:"attempts_json" json:"attempts_json,omitempty"`
+}
+
+func (l legacyAccessLog) accessLog(fallbackMillis int64) AccessLog {
+	ts := parseLegacyUnixMillis(l.Timestamp, fallbackMillis)
+	return AccessLog{
+		ID:           l.ID,
+		Timestamp:    ts,
+		ApiKeyID:     l.ApiKeyID,
+		ApiKeyName:   l.ApiKeyName,
+		Method:       l.Method,
+		Path:         l.Path,
+		Model:        l.Model,
+		StatusCode:   l.StatusCode,
+		TokensIn:     l.TokensIn,
+		TokensOut:    l.TokensOut,
+		DurationMs:   l.DurationMs,
+		RemoteIP:     l.RemoteIP,
+		RequestID:    l.RequestID,
+		ProviderName: l.ProviderName,
+		ErrorMsg:     l.ErrorMsg,
+		RawBody:      l.RawBody,
+		RawResponse:  l.RawResponse,
+		ClientReq:    l.ClientReq,
+		ClientResp:   l.ClientResp,
+		UpstreamReq:  l.UpstreamReq,
+		UpstreamResp: l.UpstreamResp,
+		QuotaBefore:  l.QuotaBefore,
+		QuotaAfter:   l.QuotaAfter,
+		AttemptsJSON: l.AttemptsJSON,
+	}
+}
+
+func (s *LogStore) migrateAccessLogTimestampJSON() error {
+	if _, c, err := s.db.Get(timestampJSONMigrationKey); err == nil {
+		c.Close()
+		return nil
+	}
+
+	iter, _ := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: primaryKeyMin,
+		UpperBound: primaryKeyMax,
+	})
+	defer iter.Close()
+
+	b := s.db.NewBatch()
+	defer b.Close()
+
+	flush := func() error {
+		if b.Count() == 0 {
+			return nil
+		}
+		if err := b.Commit(pebble.NoSync); err != nil {
+			return err
+		}
+		b.Close()
+		b = s.db.NewBatch()
+		return nil
+	}
+
+	rewritten := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(iter.Value(), &raw); err != nil {
+			continue
+		}
+		tsRaw, ok := raw["timestamp"]
+		if !ok || len(tsRaw) == 0 || tsRaw[0] != '"' {
+			continue
+		}
+
+		var tsString string
+		if err := json.Unmarshal(tsRaw, &tsString); err != nil {
+			continue
+		}
+		tsNano, _ := decodePrimaryKey(iter.Key())
+		raw["timestamp"], _ = json.Marshal(parseLegacyUnixMillis(tsString, int64(tsNano/uint64(time.Millisecond))))
+		jsonData, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		if err := b.Set(iter.Key(), jsonData, nil); err != nil {
+			return err
+		}
+		rewritten++
+		if b.Count() >= 500 {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return err
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	b.Close()
+	if err := s.db.Set(timestampJSONMigrationKey, []byte{1}, pebble.Sync); err != nil {
+		return err
+	}
+	if rewritten > 0 {
+		slog.Info("access_log_timestamp_json_migrated", "rows", rewritten)
+	}
+	return nil
+}
 
 // MigrateFromSQLite imports legacy SQLite access_logs into Pebble.
 // Crash-safe via idempotent checkpoint — safe to call on every startup.
@@ -469,21 +598,18 @@ func (s *LogStore) MigrateFromSQLite(sqlDB *sqlx.DB) (int, error) {
 	}
 
 	for rows.Next() {
-		var log AccessLog
-		if err := rows.StructScan(&log); err != nil {
+		var legacy legacyAccessLog
+		if err := rows.StructScan(&legacy); err != nil {
 			slog.Warn("pebble_migration_scan_failed", "err", err)
 			continue
 		}
 
-		sqliteID := int64(log.ID)
+		sqliteID := int64(legacy.ID)
 		pebbleID := s.NextID()
+		log := legacy.accessLog(time.Now().UnixMilli())
 		log.ID = int(pebbleID)
 
-		ts, err := time.Parse(time.RFC3339, log.Timestamp)
-		if err != nil {
-			ts = time.Now()
-		}
-		tsNano := uint64(ts.UnixNano())
+		tsNano := unixMilliToNano(log.Timestamp)
 
 		jsonData, err := json.Marshal(&log)
 		if err != nil {
@@ -528,19 +654,13 @@ func (s *LogStore) MigrateFromSQLite(sqlDB *sqlx.DB) (int, error) {
 	return migrated, nil
 }
 
-func (s *LogStore) Stats(startAt, endAt string, intervalMinutes int) ([]BucketStat, error) {
+func (s *LogStore) Stats(startAt, endAt int64, intervalMinutes int) ([]BucketStat, error) {
 	if intervalMinutes <= 0 {
 		return nil, fmt.Errorf("interval must be positive")
 	}
 
-	start, err := normalizeTimeArg(startAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse start_at: %w", err)
-	}
-	end, err := normalizeTimeArg(endAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse end_at: %w", err)
-	}
+	start := time.UnixMilli(startAt)
+	end := time.UnixMilli(endAt)
 	if !start.Before(end) {
 		return nil, fmt.Errorf("start_at must be before end_at")
 	}
@@ -556,11 +676,11 @@ func (s *LogStore) Stats(startAt, endAt string, intervalMinutes int) ([]BucketSt
 		if be.After(end) {
 			be = end
 		}
-		buckets[i].Start = bs.Format(time.RFC3339)
-		buckets[i].End = be.Format(time.RFC3339)
+		buckets[i].Start = bs.UnixMilli()
+		buckets[i].End = be.UnixMilli()
 	}
 
-	lower, upper, err := s.queryBounds(startAt, endAt)
+	lower, upper, err := s.queryBounds(&startAt, &endAt)
 	if err != nil {
 		return nil, err
 	}
@@ -580,10 +700,7 @@ func (s *LogStore) Stats(startAt, endAt string, intervalMinutes int) ([]BucketSt
 			continue
 		}
 
-		logTs, err := time.Parse(time.RFC3339, log.Timestamp)
-		if err != nil {
-			continue
-		}
+		logTs := time.UnixMilli(log.Timestamp)
 
 		hasFailover := false
 		if log.AttemptsJSON != "" && log.AttemptsJSON != "null" {
@@ -625,37 +742,38 @@ func (s *LogStore) Stats(startAt, endAt string, intervalMinutes int) ([]BucketSt
 
 // ── helpers ────────────────────────────────────────────────────────
 
-// normalizeTimeArg converts HTML datetime-local format (YYYY-MM-DDTHH:MM)
-// to RFC3339 by appending ":00Z" when needed, then parses.
-func normalizeTimeArg(raw string) (time.Time, error) {
-	// Fast path: already RFC3339 (contains timezone suffix or seconds)
-	if len(raw) > 19 {
-		return time.Parse(time.RFC3339, raw)
-	}
-	// datetime-local format: "2006-01-02T15:04" → append ":00Z"
-	if len(raw) == 16 && raw[10] == 'T' {
-		return time.Parse(time.RFC3339, raw+":00Z")
-	}
-	return time.Parse(time.RFC3339, raw)
+func unixMilliToNano(tsMillis int64) uint64 {
+	return uint64(time.UnixMilli(tsMillis).UnixNano())
 }
 
-func (s *LogStore) queryBounds(startAt, endAt string) (lower, upper []byte, err error) {
-	if startAt != "" {
-		ts, e := normalizeTimeArg(startAt)
-		if e != nil {
-			return nil, nil, fmt.Errorf("parse start_at: %w", e)
+func parseLegacyUnixMillis(raw string, fallback int64) int64 {
+	if raw == "" {
+		return fallback
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if n < 100000000000 {
+			return n * 1000
 		}
-		lower = primaryKeyLowerBound(uint64(ts.UnixNano()))
+		return n
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t.UnixMilli()
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", raw); err == nil {
+		return t.UnixMilli()
+	}
+	return fallback
+}
+
+func (s *LogStore) queryBounds(startAt, endAt *int64) (lower, upper []byte, err error) {
+	if startAt != nil {
+		lower = primaryKeyLowerBound(unixMilliToNano(*startAt))
 	} else {
 		lower = primaryKeyMin
 	}
 
-	if endAt != "" {
-		ts, e := normalizeTimeArg(endAt)
-		if e != nil {
-			return nil, nil, fmt.Errorf("parse end_at: %w", e)
-		}
-		upper = primaryKeyUpperBound(uint64(ts.UnixNano()))
+	if endAt != nil {
+		upper = primaryKeyUpperBound(unixMilliToNano(*endAt))
 	} else {
 		upper = primaryKeyMax
 	}
@@ -678,23 +796,15 @@ func (s *LogStore) matchFilters(log *AccessLog, q *AccessLogQuery) bool {
 
 // ── model index bounds ─────────────────────────────────────────────
 
-func (s *LogStore) modelBounds(model, startAt, endAt string) (lower, upper []byte, err error) {
-	if startAt != "" {
-		ts, e := time.Parse(time.RFC3339, startAt)
-		if e != nil {
-			return nil, nil, fmt.Errorf("parse start_at: %w", e)
-		}
-		lower = EncodeModelIndexKey(model, uint64(ts.UnixNano()), 0)
+func (s *LogStore) modelBounds(model string, startAt, endAt *int64) (lower, upper []byte, err error) {
+	if startAt != nil {
+		lower = EncodeModelIndexKey(model, unixMilliToNano(*startAt), 0)
 	} else {
 		lower = modelLowerBound(model)
 	}
 
-	if endAt != "" {
-		ts, e := time.Parse(time.RFC3339, endAt)
-		if e != nil {
-			return nil, nil, fmt.Errorf("parse end_at: %w", e)
-		}
-		upper = EncodeModelIndexKey(model, uint64(ts.UnixNano())+1, 0)
+	if endAt != nil {
+		upper = EncodeModelIndexKey(model, unixMilliToNano(*endAt)+1, 0)
 	} else {
 		upper = modelUpperBound(model)
 	}

@@ -247,11 +247,10 @@ func (w *accessLogWriter) run() {
 			id := w.logStore.NextID()
 			logEntry.ID = int(id)
 
-			ts, err := time.Parse(time.RFC3339, logEntry.Timestamp)
-			if err != nil {
-				ts = time.Now()
+			if logEntry.Timestamp <= 0 {
+				logEntry.Timestamp = time.Now().UnixMilli()
 			}
-			tsNano := uint64(ts.UnixNano())
+			tsNano := uint64(time.UnixMilli(logEntry.Timestamp).UnixNano())
 
 			jsonData, err := json.Marshal(&logEntry)
 			if err != nil {
@@ -387,7 +386,7 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		}
 
 		log := config.AccessLog{
-			Timestamp:    start.UTC().Format(time.RFC3339),
+			Timestamp:    start.UnixMilli(),
 			ApiKeyID:     keyID,
 			ApiKeyName:   keyName,
 			Method:       r.Method,

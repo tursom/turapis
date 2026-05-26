@@ -91,6 +91,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	var lastErr error
 	var attempts []AttemptInfo
 	attemptNum := 0
+	skippedCooldown := 0
 
 	callProvider := func(p provider.Provider) (*models.UnifiedResponse, error, time.Duration, string, string, int) {
 		attemptNum++
@@ -104,6 +105,12 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 	}
 
 	for _, p := range chain {
+		if r.providerCoolingDown(p.ID()) {
+			skippedCooldown++
+			slog.Info("provider_cooling_down", "provider", p.Name())
+			continue
+		}
+
 		if _, err := r.refreshOAuthProviderIfNeeded(p, false); err != nil {
 			slog.Warn("oauth_preemptive_refresh_failed", "provider", p.Name(), "error", err)
 		}
@@ -112,6 +119,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 
 		if err == nil {
 			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, n)
+			r.resetProviderCooldown(p.ID())
 			slog.Info("route_success",
 				"model", req.Model,
 				"used_provider", p.Name(),
@@ -149,6 +157,7 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 				resp, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, retryN := callProvider(p)
 				if retryErr == nil {
 					recordAttempt(ctx, p.Name(), 200, nil, retryDuration, retryQuotaBefore, retryQuotaAfter, true, retryN)
+					r.resetProviderCooldown(p.ID())
 					slog.Info("route_success_after_oauth_refresh",
 						"model", req.Model,
 						"used_provider", p.Name(),
@@ -181,10 +190,16 @@ func (r *Router) routeNonStream(ctx context.Context, req *models.UnifiedRequest)
 		}
 
 		if !models.ShouldFailover(cat) {
+			r.markProviderFailure(p.ID(), statusCodeFromErr(err))
 			return nil, err // auth error — 不重试
 		}
 
 		lastErr = err
+		r.markProviderFailure(p.ID(), statusCodeFromErr(err))
+	}
+
+	if lastErr == nil && skippedCooldown > 0 {
+		return nil, fmt.Errorf("all providers are cooling down")
 	}
 
 	ferr := &FailoverError{LastError: lastErr, Attempts: attempts}
@@ -209,6 +224,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 	var lastErr error
 	var attempts []AttemptInfo
 	attemptNum := 0
+	skippedCooldown := 0
 
 	callProvider := func(p provider.Provider) (<-chan models.UnifiedStreamEvent, error, time.Duration, string, string, int) {
 		attemptNum++
@@ -222,6 +238,12 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 	}
 
 	for _, p := range chain {
+		if r.providerCoolingDown(p.ID()) {
+			skippedCooldown++
+			slog.Info("stream_provider_cooling_down", "provider", p.Name())
+			continue
+		}
+
 		if _, err := r.refreshOAuthProviderIfNeeded(p, false); err != nil {
 			slog.Warn("oauth_preemptive_refresh_failed", "provider", p.Name(), "error", err)
 		}
@@ -229,6 +251,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 		events, err, duration, quotaBefore, quotaAfter, n := callProvider(p)
 		if err == nil {
 			recordAttempt(ctx, p.Name(), 200, nil, duration, quotaBefore, quotaAfter, true, n)
+			r.resetProviderCooldown(p.ID())
 			if n > 1 {
 				slog.Info("stream_failover",
 					"model", req.Model,
@@ -274,6 +297,7 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 				events, retryErr, retryDuration, retryQuotaBefore, retryQuotaAfter, retryN := callProvider(p)
 				if retryErr == nil {
 					recordAttempt(ctx, p.Name(), 200, nil, retryDuration, retryQuotaBefore, retryQuotaAfter, true, retryN)
+					r.resetProviderCooldown(p.ID())
 					result := &StreamRouteResult{
 						Events:       events,
 						ProviderName: p.Name(),
@@ -307,8 +331,14 @@ func (r *Router) routeStream(ctx context.Context, req *models.UnifiedRequest) (*
 
 		lastErr = err
 		if !models.ShouldFailover(cat) {
+			r.markProviderFailure(p.ID(), statusCodeFromErr(err))
 			return nil, err
 		}
+		r.markProviderFailure(p.ID(), statusCodeFromErr(err))
+	}
+
+	if lastErr == nil && skippedCooldown > 0 {
+		return nil, fmt.Errorf("all providers are cooling down")
 	}
 
 	return nil, &FailoverError{LastError: lastErr, Attempts: attempts}

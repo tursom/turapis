@@ -103,7 +103,7 @@ export default function Routing() {
           return
         }
         await updateModelMapping({
-          ...existing,
+          id: existing.id,
           model_name: data.model_name,
           provider_id: data.provider_id,
           priority: data.priority,
@@ -179,7 +179,13 @@ export default function Routing() {
           const priority = basePriority + pi
           if (existing) {
             if (existing.priority !== priority) {
-              await updateModelMapping({ ...existing, priority })
+              await updateModelMapping({
+                id: existing.id,
+                model_name: existing.model_name,
+                provider_id: existing.provider_id,
+                priority,
+                enabled: existing.enabled,
+              })
             }
           } else {
             await createModelMapping({

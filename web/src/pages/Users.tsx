@@ -81,7 +81,13 @@ export default function Users() {
       title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? '启用' : '禁用'}</Tag>,
     },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (v: number) => new Date(v).toLocaleString('zh-CN'),
+    },
     {
       title: '操作', key: 'actions', width: 160,
       render: (_: unknown, record: User) => (

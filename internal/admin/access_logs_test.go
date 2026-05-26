@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func setupTestAdminWithLogStore(t *testing.T) *Admin {
 func insertAccessLog(t *testing.T, a *Admin, ts time.Time, tokensIn, tokensOut int, attemptsJSON string) {
 	t.Helper()
 	log := &config.AccessLog{
-		Timestamp:    ts.Format(time.RFC3339),
+		Timestamp:    ts.UnixMilli(),
 		TokensIn:     tokensIn,
 		TokensOut:    tokensOut,
 		AttemptsJSON: attemptsJSON,
@@ -55,7 +56,7 @@ func TestAccessLogStats_Success(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/access-logs/stats", admin.accessLogStats)
 
-	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339)+"&to="+base.Add(20*time.Minute).Format(time.RFC3339)+"&interval=10", nil)
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+strconv.FormatInt(base.UnixMilli(), 10)+"&to="+strconv.FormatInt(base.Add(20*time.Minute).UnixMilli(), 10)+"&interval=10", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -109,7 +110,7 @@ func TestAccessLogStats_MissingToParam(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/access-logs/stats", admin.accessLogStats)
 
-	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339), nil)
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+strconv.FormatInt(base.UnixMilli(), 10), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -125,12 +126,28 @@ func TestAccessLogStats_InvalidInterval(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/access-logs/stats", admin.accessLogStats)
 
-	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339)+"&to="+base.Add(20*time.Minute).Format(time.RFC3339)+"&interval=0", nil)
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+strconv.FormatInt(base.UnixMilli(), 10)+"&to="+strconv.FormatInt(base.Add(20*time.Minute).UnixMilli(), 10)+"&interval=0", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for interval=0, got %d", w.Code)
+	}
+}
+
+func TestAccessLogStats_RejectsStringTimestamps(t *testing.T) {
+	admin := setupTestAdminWithLogStore(t)
+	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
+
+	r := chi.NewRouter()
+	r.Get("/access-logs/stats", admin.accessLogStats)
+
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339)+"&to="+strconv.FormatInt(base.Add(20*time.Minute).UnixMilli(), 10), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for string timestamp, got %d", w.Code)
 	}
 }
 
@@ -143,7 +160,7 @@ func TestAccessLogStats_DefaultInterval(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/access-logs/stats", admin.accessLogStats)
 
-	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339)+"&to="+base.Add(30*time.Minute).Format(time.RFC3339), nil)
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+strconv.FormatInt(base.UnixMilli(), 10)+"&to="+strconv.FormatInt(base.Add(30*time.Minute).UnixMilli(), 10), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -178,7 +195,7 @@ func TestAccessLogStats_NoLogStore(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/access-logs/stats", admin.accessLogStats)
 
-	req := httptest.NewRequest("GET", "/access-logs/stats?from="+base.Format(time.RFC3339)+"&to="+base.Add(10*time.Minute).Format(time.RFC3339), nil)
+	req := httptest.NewRequest("GET", "/access-logs/stats?from="+strconv.FormatInt(base.UnixMilli(), 10)+"&to="+strconv.FormatInt(base.Add(10*time.Minute).UnixMilli(), 10), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

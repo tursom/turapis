@@ -46,7 +46,7 @@ func (a *Admin) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Enabled     bool   `json:"enabled"`
 		Permissions string `json:"permissions"`
-		CreatedAt   string `json:"created_at"`
+		CreatedAt   int64  `json:"created_at"`
 	}
 
 	masked := make([]maskedKey, len(keys))

@@ -79,7 +79,7 @@ export default function Providers() {
   const handleSave = async () => {
     try {
       if (editing) {
-        await updateProvider({ ...form, id: editing.id, created_at: editing.created_at, updated_at: '' })
+        await updateProvider({ ...form, id: editing.id })
       } else {
         await createProvider(form)
       }

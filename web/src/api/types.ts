@@ -10,8 +10,8 @@ export interface Provider {
   supported_tools: string
   proxy: string
   quota?: QuotaInfo
-  created_at: string
-  updated_at: string
+  created_at: number
+  updated_at: number
 }
 
 export interface QuotaInfo {
@@ -33,8 +33,8 @@ export interface Site {
   protocol: 'openai' | 'anthropic'
   auth_mode: string
   enabled: boolean
-  created_at: string
-  updated_at: string
+  created_at: number
+  updated_at: number
   model_count?: number
 }
 
@@ -56,7 +56,7 @@ export interface ModelMapping {
   provider_id: number
   priority: number
   enabled: boolean
-  created_at: string
+  created_at: number
 }
 
 export interface APIKeyPermissions {
@@ -70,14 +70,14 @@ export interface APIKeyListItem {
   name: string
   enabled: boolean
   permissions: string
-  created_at: string
+  created_at: number
 }
 
 export interface APIKeyCreated {
   id: number
   key: string
   name: string
-  created_at: string
+  created_at: number
 }
 
 export interface ProviderStatus {
@@ -107,7 +107,7 @@ export interface AttemptRecord {
 
 export interface AccessLog {
   id: number
-  timestamp: string
+  timestamp: number
   api_key_id: number | null
   api_key_name: string
   method: string
@@ -148,7 +148,7 @@ export interface User {
   username: string
   role: 'admin' | 'user'
   enabled: boolean
-  created_at: string
+  created_at: number
 }
 
 export interface LoginResponse {
@@ -158,8 +158,8 @@ export interface LoginResponse {
 }
 
 export interface BucketStat {
-  start: string
-  end: string
+  start: number
+  end: number
   count_with_failover: number
   count_without_failover: number
   tokens_in_with_failover: number
@@ -171,5 +171,4 @@ export interface BucketStat {
 export interface AccessLogStatsResponse {
   buckets: BucketStat[]
 }
-
 

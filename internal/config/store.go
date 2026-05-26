@@ -29,8 +29,8 @@ type Provider struct {
 	SupportedTools string           `db:"supported_tools" json:"supported_tools"`
 	Proxy          string           `db:"proxy" json:"proxy"`
 	Quota          *json.RawMessage `db:"-" json:"quota,omitempty"`
-	CreatedAt      string           `db:"created_at" json:"created_at"`
-	UpdatedAt      string           `db:"updated_at" json:"updated_at"`
+	CreatedAt      int64            `db:"created_at" json:"created_at"`
+	UpdatedAt      int64            `db:"updated_at" json:"updated_at"`
 }
 
 // Site 站点预设（Provider 模板，不含认证信息）
@@ -41,8 +41,8 @@ type Site struct {
 	Protocol  string `db:"protocol" json:"protocol"`
 	AuthMode  string `db:"auth_mode" json:"auth_mode"`
 	Enabled   bool   `db:"enabled" json:"enabled"`
-	CreatedAt string `db:"created_at" json:"created_at"`
-	UpdatedAt string `db:"updated_at" json:"updated_at"`
+	CreatedAt int64  `db:"created_at" json:"created_at"`
+	UpdatedAt int64  `db:"updated_at" json:"updated_at"`
 }
 
 // SiteModel 站点预设模型
@@ -60,7 +60,7 @@ type ModelMapping struct {
 	ProviderID int    `db:"provider_id" json:"provider_id"`
 	Priority   int    `db:"priority" json:"priority"`
 	Enabled    bool   `db:"enabled" json:"enabled"`
-	CreatedAt  string `db:"created_at" json:"created_at"`
+	CreatedAt  int64  `db:"created_at" json:"created_at"`
 }
 
 // PriorityChainEntry 优先级链中的一个条目（Provider ID + 优先级）
@@ -138,9 +138,10 @@ func (s *Store) Close() error {
 // --- Session CRUD ---
 
 func (s *Store) CreateSession(token string, userID int64, expiresAt time.Time) error {
+	now := time.Now().UnixMilli()
 	_, err := s.DB.Exec(
-		"INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-		token, userID, expiresAt.UTC().Format(time.RFC3339),
+		"INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+		token, userID, expiresAt.UnixMilli(), now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -158,7 +159,8 @@ func (s *Store) DeleteSession(token string) error {
 
 func (s *Store) DeleteExpiredSessions() (int64, error) {
 	result, err := s.DB.Exec(
-		"DELETE FROM sessions WHERE expires_at < datetime('now')",
+		"DELETE FROM sessions WHERE expires_at < ?",
+		time.Now().UnixMilli(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired sessions: %w", err)
@@ -168,16 +170,12 @@ func (s *Store) DeleteExpiredSessions() (int64, error) {
 }
 
 func (s *Store) ValidateSession(token string) bool {
-	var expiresAt string
+	var expiresAt int64
 	err := s.DB.Get(&expiresAt, "SELECT expires_at FROM sessions WHERE token = ?", token)
 	if err != nil {
 		return false
 	}
-	t, err := time.Parse(time.RFC3339, expiresAt)
-	if err != nil {
-		return false
-	}
-	return time.Now().Before(t)
+	return time.Now().UnixMilli() < expiresAt
 }
 
 type SessionInfo struct {
@@ -191,8 +189,8 @@ func (s *Store) GetSessionUser(token string) (*SessionInfo, error) {
 	err := s.DB.Get(&info,
 		`SELECT u.id AS "user_id", u.role, u.username
 		 FROM sessions s JOIN users u ON u.id = s.user_id
-		 WHERE s.token = ? AND s.expires_at > datetime('now') AND u.enabled = 1`,
-		token,
+		 WHERE s.token = ? AND s.expires_at > ? AND u.enabled = 1`,
+		token, time.Now().UnixMilli(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get session user: %w", err)
@@ -205,10 +203,10 @@ func (s *Store) RefreshSession(token string, ttls ...time.Duration) bool {
 	if len(ttls) > 0 {
 		ttl = ttls[0]
 	}
-	newExpires := time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	newExpires := time.Now().Add(ttl).UnixMilli()
 	result, err := s.DB.Exec(
-		"UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > datetime('now')",
-		newExpires, token,
+		"UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > ?",
+		newExpires, token, time.Now().UnixMilli(),
 	)
 	if err != nil {
 		return false
@@ -221,7 +219,7 @@ func (s *Store) RefreshSession(token string, ttls ...time.Duration) bool {
 
 // CreateProvider 创建 Provider
 func (s *Store) CreateProvider(p *Provider) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UnixMilli()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 
@@ -279,7 +277,7 @@ func (s *Store) ListEnabledProviders() ([]Provider, error) {
 
 // UpdateProvider 更新 Provider
 func (s *Store) UpdateProvider(p *Provider) error {
-	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.UpdatedAt = time.Now().UnixMilli()
 	_, err := s.DB.NamedExec(
 		`UPDATE providers SET name=:name, base_url=:base_url, api_key=:api_key,
 		 protocol=:protocol, auth_mode=:auth_mode, priority=:priority, enabled=:enabled,
@@ -306,7 +304,7 @@ func (s *Store) DeleteProvider(id int) error {
 
 // CreateModelMapping 创建模型映射
 func (s *Store) CreateModelMapping(m *ModelMapping) error {
-	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	m.CreatedAt = time.Now().UnixMilli()
 	result, err := s.DB.NamedExec(
 		`INSERT INTO model_mappings (model_name, provider_id, priority, enabled, created_at)
 		 VALUES (:model_name, :provider_id, :priority, :enabled, :created_at)`,
@@ -393,9 +391,9 @@ func (s *Store) GetSetting(key string) (string, error) {
 // SetSetting 设置全局设置
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.DB.Exec(
-		`INSERT INTO global_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+		`INSERT INTO global_settings (key, value, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		key, value,
+		key, value, time.Now().UnixMilli(),
 	)
 	if err != nil {
 		return fmt.Errorf("set setting: %w", err)
@@ -611,19 +609,19 @@ type User struct {
 	PasswordHash string `db:"password_hash" json:"-"`
 	Role         string `db:"role"          json:"role"`
 	Enabled      bool   `db:"enabled"       json:"enabled"`
-	CreatedAt    string `db:"created_at"    json:"created_at"`
+	CreatedAt    int64  `db:"created_at"    json:"created_at"`
 }
 
 // APIKey 下游客户端 API 密钥
 type APIKey struct {
-	ID          int     `db:"id" json:"id"`
-	Key         string  `db:"key" json:"key"`
-	Name        string  `db:"name" json:"name"`
-	Enabled     bool    `db:"enabled" json:"enabled"`
-	Permissions string  `db:"permissions" json:"permissions"`
-	ExpiresAt   *string `db:"expires_at" json:"-"`
-	RateLimit   *int    `db:"rate_limit" json:"-"`
-	CreatedAt   string  `db:"created_at" json:"created_at"`
+	ID          int    `db:"id" json:"id"`
+	Key         string `db:"key" json:"key"`
+	Name        string `db:"name" json:"name"`
+	Enabled     bool   `db:"enabled" json:"enabled"`
+	Permissions string `db:"permissions" json:"permissions"`
+	ExpiresAt   *int64 `db:"expires_at" json:"-"`
+	RateLimit   *int   `db:"rate_limit" json:"-"`
+	CreatedAt   int64  `db:"created_at" json:"created_at"`
 }
 
 // APIKeyPermissions defines the parsed permissions JSON structure.
@@ -682,7 +680,7 @@ func (k *APIKey) IsProviderAllowed(provider string) bool {
 func (s *Store) CreateAPIKey(name string) (*APIKey, error) {
 	key := "sk-" + randomHex(48)
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UnixMilli()
 	result, err := s.DB.Exec(
 		`INSERT INTO api_keys (key, name, enabled, permissions, created_at)
 		 VALUES (?, ?, 1, '{}', ?)`,
@@ -774,8 +772,8 @@ func (s *Store) CreateUser(username, password, role string) (int64, error) {
 		return 0, fmt.Errorf("hash password: %w", err)
 	}
 	result, err := s.DB.Exec(
-		"INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-		username, string(hash), role,
+		"INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+		username, string(hash), role, time.Now().UnixMilli(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create user: %w", err)
@@ -884,7 +882,7 @@ func (s *Store) GetProviderAPIKey(id int) (string, error) {
 }
 
 func (s *Store) UpdateProviderAPIKey(id int, apiKey string) error {
-	_, err := s.DB.Exec("UPDATE providers SET api_key = ?, updated_at = datetime('now') WHERE id = ?", apiKey, id)
+	_, err := s.DB.Exec("UPDATE providers SET api_key = ?, updated_at = ? WHERE id = ?", apiKey, time.Now().UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("update provider api key: %w", err)
 	}
@@ -893,8 +891,8 @@ func (s *Store) UpdateProviderAPIKey(id int, apiKey string) error {
 
 func (s *Store) UpdateProviderAPIKeyIfCurrent(id int, currentAPIKey string, newAPIKey string) (bool, error) {
 	result, err := s.DB.Exec(
-		"UPDATE providers SET api_key = ?, updated_at = datetime('now') WHERE id = ? AND api_key = ?",
-		newAPIKey, id, currentAPIKey,
+		"UPDATE providers SET api_key = ?, updated_at = ? WHERE id = ? AND api_key = ?",
+		newAPIKey, time.Now().UnixMilli(), id, currentAPIKey,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update provider api key: %w", err)
@@ -984,7 +982,7 @@ func ParseProviderQuota(apiKey string) *json.RawMessage {
 // --- Site CRUD ---
 
 func (s *Store) CreateSite(site *Site) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UnixMilli()
 	site.CreatedAt = now
 	site.UpdatedAt = now
 	result, err := s.DB.NamedExec(
@@ -1025,7 +1023,7 @@ func (s *Store) ListSites() ([]Site, error) {
 }
 
 func (s *Store) UpdateSite(site *Site) error {
-	site.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	site.UpdatedAt = time.Now().UnixMilli()
 	_, err := s.DB.NamedExec(
 		`UPDATE sites SET name=:name, base_url=:base_url, protocol=:protocol,
 		 auth_mode=:auth_mode, enabled=:enabled, updated_at=:updated_at
@@ -1079,7 +1077,7 @@ func (s *Store) DeleteSiteModel(id int) error {
 // --- Transaction helpers ---
 
 func (s *Store) createProviderTx(tx *sqlx.Tx, p *Provider) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UnixMilli()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	result, err := tx.NamedExec(
@@ -1096,7 +1094,7 @@ func (s *Store) createProviderTx(tx *sqlx.Tx, p *Provider) error {
 }
 
 func (s *Store) createModelMappingTx(tx *sqlx.Tx, m *ModelMapping) error {
-	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	m.CreatedAt = time.Now().UnixMilli()
 	result, err := tx.NamedExec(
 		`INSERT INTO model_mappings (model_name, provider_id, priority, enabled, created_at)
 		 VALUES (:model_name, :provider_id, :priority, :enabled, :created_at)`,
@@ -1233,7 +1231,7 @@ func (s *Store) SeedBuiltinSites() error {
 	}
 
 	for _, bs := range builtinSites {
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := time.Now().UnixMilli()
 		bs.Site.CreatedAt = now
 		bs.Site.UpdatedAt = now
 
@@ -1244,7 +1242,7 @@ func (s *Store) SeedBuiltinSites() error {
 			   base_url=excluded.base_url,
 			   protocol=excluded.protocol,
 			   auth_mode=excluded.auth_mode,
-			   updated_at=datetime('now')`,
+			   updated_at=excluded.updated_at`,
 			&bs.Site,
 		)
 		if err != nil {
@@ -1293,7 +1291,7 @@ type AttemptRecord struct {
 // AccessLog API 访问日志
 type AccessLog struct {
 	ID           int    `db:"id" json:"id"`
-	Timestamp    string `db:"timestamp" json:"timestamp"`
+	Timestamp    int64  `db:"timestamp" json:"timestamp"`
 	ApiKeyID     *int   `db:"api_key_id" json:"api_key_id"`
 	ApiKeyName   string `db:"api_key_name" json:"api_key_name"`
 	Method       string `db:"method" json:"method"`
@@ -1323,22 +1321,22 @@ type AccessLogQuery struct {
 	ApiKeyID *int   `json:"api_key_id,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Status   *int   `json:"status,omitempty"`
-	StartAt  string `json:"start_at,omitempty"`
-	EndAt    string `json:"end_at,omitempty"`
+	StartAt  *int64 `json:"start_at,omitempty"`
+	EndAt    *int64 `json:"end_at,omitempty"`
 	Page     int    `json:"page"`
 	PerPage  int    `json:"per_page"`
 }
 
 // BucketStat 时间桶访问日志统计
 type BucketStat struct {
-	Start                    string `json:"start"`
-	End                      string `json:"end"`
-	CountWithFailover        int    `json:"count_with_failover"`
-	CountWithoutFailover     int    `json:"count_without_failover"`
-	TokensInWithFailover     int    `json:"tokens_in_with_failover"`
-	TokensInWithoutFailover  int    `json:"tokens_in_without_failover"`
-	TokensOutWithFailover    int    `json:"tokens_out_with_failover"`
-	TokensOutWithoutFailover int    `json:"tokens_out_without_failover"`
+	Start                    int64 `json:"start"`
+	End                      int64 `json:"end"`
+	CountWithFailover        int   `json:"count_with_failover"`
+	CountWithoutFailover     int   `json:"count_without_failover"`
+	TokensInWithFailover     int   `json:"tokens_in_with_failover"`
+	TokensInWithoutFailover  int   `json:"tokens_in_without_failover"`
+	TokensOutWithFailover    int   `json:"tokens_out_with_failover"`
+	TokensOutWithoutFailover int   `json:"tokens_out_without_failover"`
 }
 
 // InsertAccessLog 插入访问日志（委托给 LogStore，如未配置则跳过）
@@ -1372,7 +1370,7 @@ func (s *Store) GetAccessLog(id int) (*AccessLog, error) {
 	return s.LogStore.Get(id)
 }
 
-func (s *Store) GetAccessLogStats(startAt, endAt string, intervalMinutes int) ([]BucketStat, error) {
+func (s *Store) GetAccessLogStats(startAt, endAt int64, intervalMinutes int) ([]BucketStat, error) {
 	if s.LogStore == nil {
 		return []BucketStat{}, nil
 	}

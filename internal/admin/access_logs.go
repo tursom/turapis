@@ -26,10 +26,20 @@ func (a *Admin) getAccessLog(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) accessLogStats(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	from := q.Get("from")
-	to := q.Get("to")
-	if from == "" || to == "" {
+	fromRaw := q.Get("from")
+	toRaw := q.Get("to")
+	if fromRaw == "" || toRaw == "" {
 		writeError(w, http.StatusBadRequest, "from and to query params are required")
+		return
+	}
+	from, err := strconv.ParseInt(fromRaw, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid from")
+		return
+	}
+	to, err := strconv.ParseInt(toRaw, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid to")
 		return
 	}
 
@@ -69,8 +79,22 @@ func (a *Admin) listAccessLogs(w http.ResponseWriter, r *http.Request) {
 			params.Status = &s
 		}
 	}
-	params.StartAt = q.Get("from")
-	params.EndAt = q.Get("to")
+	if v := q.Get("from"); v != "" {
+		from, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid from")
+			return
+		}
+		params.StartAt = &from
+	}
+	if v := q.Get("to"); v != "" {
+		to, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid to")
+			return
+		}
+		params.EndAt = &to
+	}
 
 	params.Page = 1
 	if v := q.Get("page"); v != "" {

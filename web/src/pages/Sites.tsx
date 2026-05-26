@@ -30,7 +30,7 @@ export default function Sites() {
   const handleSave = async () => {
     try {
       if (editing) {
-        await updateSite({ ...form, id: editing.id, created_at: editing.created_at, updated_at: '' })
+        await updateSite({ ...form, id: editing.id })
       } else {
         await createSite(form)
       }

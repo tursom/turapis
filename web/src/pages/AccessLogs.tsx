@@ -53,6 +53,12 @@ export default function AccessLogs() {
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
+  const datetimeLocalToMillis = (value: string) => {
+    if (!value) return undefined
+    const ms = new Date(value).getTime()
+    return Number.isNaN(ms) ? undefined : ms
+  }
+
   const setQuickRange = (hours: number) => {
     const now = new Date()
     const from = new Date(now.getTime() - hours * 60 * 60 * 1000)
@@ -67,15 +73,19 @@ export default function AccessLogs() {
     fetchAPIKeys().then(setApiKeys).catch(() => {})
   }, [])
 
-  const buildQuery = (p: number) => ({
-    key_id: filterKeyId,
-    model: filterModel || undefined,
-    status: filterStatus || undefined,
-    from: filterFrom || undefined,
-    to: filterTo || undefined,
-    page: p,
-    per_page: perPage,
-  })
+  const buildQuery = (p: number) => {
+    const from = datetimeLocalToMillis(filterFrom)
+    const to = datetimeLocalToMillis(filterTo)
+    return {
+      key_id: filterKeyId,
+      model: filterModel || undefined,
+      status: filterStatus || undefined,
+      from,
+      to,
+      page: p,
+      per_page: perPage,
+    }
+  }
 
   const load = (p: number) => {
     setLoading(true)
@@ -108,9 +118,12 @@ export default function AccessLogs() {
   useEffect(() => {
     if (activeTab === 'stats' || activeTab === 'tokens') {
       if (!filterFrom || !filterTo) return
+      const from = datetimeLocalToMillis(filterFrom)
+      const to = datetimeLocalToMillis(filterTo)
+      if (from === undefined || to === undefined) return
       setStatsLoading(true)
       setStatsError('')
-      fetchAccessLogStats({ from: filterFrom, to: filterTo, interval: 10 })
+      fetchAccessLogStats({ from, to, interval: 10 })
         .then(data => setStatsData(data))
         .catch(e => setStatsError(e.message))
         .finally(() => setStatsLoading(false))
@@ -123,7 +136,7 @@ export default function AccessLogs() {
     load(p)
   }
 
-  const formatTime = (ts: string) => {
+  const formatTime = (ts: number) => {
     const d = new Date(ts)
     return d.toLocaleString('zh-CN', {
       year: 'numeric', month: '2-digit', day: '2-digit',

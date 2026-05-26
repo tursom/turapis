@@ -1,7 +1,11 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func setupTestStore(t *testing.T) *Store {
@@ -12,6 +16,88 @@ func setupTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
+}
+
+func TestMigrationConvertsSQLiteTimeColumnsToUnixMillis(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sqlx.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+
+	for _, m := range []migration{
+		{version: 1, name: "001_initial_schema.sql"},
+		{version: 2, name: "002_add_provider_columns.sql"},
+		{version: 3, name: "003_add_global_settings_updated_at.sql"},
+		{version: 4, name: "004_add_access_log_columns.sql"},
+		{version: 5, name: "005_users_rbac.sql"},
+		{version: 7, name: "007_providers_name_unique.sql"},
+	} {
+		if err := execMigration(db, m); err != nil {
+			t.Fatalf("exec migration %s: %v", m.name, err)
+		}
+	}
+	if err := setSchemaVersion(db, 7); err != nil {
+		t.Fatalf("set legacy schema version: %v", err)
+	}
+
+	created := "2026-05-12T12:00:00Z"
+	updated := "2026-05-12 12:00:05"
+	if _, err := db.Exec(
+		`INSERT INTO providers (name, base_url, api_key, protocol, auth_mode, priority, enabled, supported_tools, proxy, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-provider", "https://example.test", "sk-test", "openai", "api_key", 10, 1, "[]", "", created, updated,
+	); err != nil {
+		t.Fatalf("insert legacy provider: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO users (username, password_hash, role, enabled, created_at) VALUES (?, ?, ?, ?, ?)`,
+		"legacy-user", "hash", "user", 1, created,
+	); err != nil {
+		t.Fatalf("insert legacy user: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO sessions (token, expires_at, created_at, user_id) VALUES (?, ?, ?, ?)`,
+		"legacy-session", "2026-05-13T12:00:00Z", created, nil,
+	); err != nil {
+		t.Fatalf("insert legacy session: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	wantCreated := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC).UnixMilli()
+	wantUpdated := time.Date(2026, 5, 12, 12, 0, 5, 0, time.UTC).UnixMilli()
+
+	provider, err := store.GetProvider(1)
+	if err != nil {
+		t.Fatalf("get migrated provider: %v", err)
+	}
+	if provider.CreatedAt != wantCreated || provider.UpdatedAt != wantUpdated {
+		t.Fatalf("provider timestamps = (%d, %d), want (%d, %d)", provider.CreatedAt, provider.UpdatedAt, wantCreated, wantUpdated)
+	}
+
+	var providerCreatedType string
+	if err := store.DB.Get(&providerCreatedType, "SELECT typeof(created_at) FROM providers WHERE id = 1"); err != nil {
+		t.Fatalf("get provider created_at type: %v", err)
+	}
+	if providerCreatedType != "integer" {
+		t.Fatalf("provider created_at type = %s, want integer", providerCreatedType)
+	}
+
+	var sessionExpires int64
+	if err := store.DB.Get(&sessionExpires, "SELECT expires_at FROM sessions WHERE token = ?", "legacy-session"); err != nil {
+		t.Fatalf("get migrated session: %v", err)
+	}
+	if sessionExpires != time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC).UnixMilli() {
+		t.Fatalf("session expires_at = %d", sessionExpires)
+	}
 }
 
 func TestCreateAPIKey(t *testing.T) {

@@ -2,6 +2,10 @@ import type { Provider, ModelMapping, APIKeyListItem, APIKeyCreated, ServiceStat
 
 const API_BASE = ''
 
+type ProviderWrite = Omit<Provider, 'created_at' | 'updated_at' | 'quota'>
+type ModelMappingWrite = Omit<ModelMapping, 'created_at'>
+type SiteWrite = Omit<Site, 'created_at' | 'updated_at' | 'model_count'>
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(API_BASE + path, {
     ...options,
@@ -40,14 +44,14 @@ export function fetchProviders() {
   return request<Provider[]>('/admin/providers')
 }
 
-export function createProvider(p: Omit<Provider, 'id' | 'created_at' | 'updated_at'>) {
+export function createProvider(p: Omit<ProviderWrite, 'id'>) {
   return request<Provider>('/admin/providers', {
     method: 'POST',
     body: JSON.stringify(p),
   })
 }
 
-export function updateProvider(p: Provider) {
+export function updateProvider(p: ProviderWrite) {
   return request<Provider>(`/admin/providers/${p.id}`, {
     method: 'PUT',
     body: JSON.stringify(p),
@@ -63,14 +67,14 @@ export function fetchModelMappings() {
   return request<ModelMapping[]>('/admin/model-mappings')
 }
 
-export function createModelMapping(m: Omit<ModelMapping, 'id' | 'created_at'>) {
+export function createModelMapping(m: Omit<ModelMappingWrite, 'id'>) {
   return request<ModelMapping>('/admin/model-mappings', {
     method: 'POST',
     body: JSON.stringify(m),
   })
 }
 
-export function updateModelMapping(m: ModelMapping) {
+export function updateModelMapping(m: ModelMappingWrite) {
   return request<ModelMapping>(`/admin/model-mappings/${m.id}`, {
     method: 'PUT',
     body: JSON.stringify(m),
@@ -138,11 +142,11 @@ export function fetchSites() {
   return request<Site[]>('/admin/sites')
 }
 
-export function createSite(s: Omit<Site, 'id' | 'created_at' | 'updated_at' | 'model_count'>) {
+export function createSite(s: Omit<SiteWrite, 'id'>) {
   return request<Site>('/admin/sites', { method: 'POST', body: JSON.stringify(s) })
 }
 
-export function updateSite(s: Site) {
+export function updateSite(s: SiteWrite) {
   return request<Site>(`/admin/sites/${s.id}`, { method: 'PUT', body: JSON.stringify(s) })
 }
 
@@ -197,4 +201,3 @@ export function updateUser(id: number, data: { username?: string; password?: str
 export function deleteUser(id: number) {
   return request<{ status: string }>(`/admin/users/${id}`, { method: 'DELETE' })
 }
-

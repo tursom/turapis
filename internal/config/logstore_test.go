@@ -4,7 +4,44 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/pebble/v2"
 )
+
+func TestLogStoreMigratesStringTimestampJSON(t *testing.T) {
+	dir := t.TempDir()
+	db, err := pebble.Open(dir, &pebble.Options{})
+	if err != nil {
+		t.Fatalf("open raw pebble: %v", err)
+	}
+	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
+	id := uint64(1)
+	tsNano := uint64(base.UnixNano())
+	raw := []byte(`{"id":1,"timestamp":"` + base.Format(time.RFC3339) + `","method":"GET","path":"/v1/test"}`)
+	if err := db.Set(EncodePrimaryKey(tsNano, id), raw, pebble.NoSync); err != nil {
+		t.Fatalf("seed primary: %v", err)
+	}
+	if err := db.Set(EncodeIndexKey(id), EncodeTimestampValue(tsNano), pebble.NoSync); err != nil {
+		t.Fatalf("seed index: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw pebble: %v", err)
+	}
+
+	ls, err := OpenLogStore(dir)
+	if err != nil {
+		t.Fatalf("open migrated log store: %v", err)
+	}
+	t.Cleanup(func() { ls.Close() })
+
+	log, err := ls.Get(int(id))
+	if err != nil {
+		t.Fatalf("get migrated log: %v", err)
+	}
+	if log.Timestamp != base.UnixMilli() {
+		t.Fatalf("timestamp = %d, want %d", log.Timestamp, base.UnixMilli())
+	}
+}
 
 func openTestLogStore(t *testing.T) *LogStore {
 	t.Helper()
@@ -28,7 +65,7 @@ func insertTestLog(t *testing.T, ls *LogStore, ts time.Time, tokensIn, tokensOut
 		attemptsJSON = string(b)
 	}
 	log := &AccessLog{
-		Timestamp:    ts.Format(time.RFC3339),
+		Timestamp:    ts.UnixMilli(),
 		TokensIn:     tokensIn,
 		TokensOut:    tokensOut,
 		AttemptsJSON: attemptsJSON,
@@ -52,8 +89,8 @@ func TestLogStoreStats_Basic(t *testing.T) {
 	insertTestLog(t, ls, base.Add(12*time.Minute), 150, 60, nil)
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(20*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(20*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -98,7 +135,7 @@ func TestLogStoreStats_InvalidAttemptsJSON(t *testing.T) {
 	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
 
 	log := &AccessLog{
-		Timestamp:    base.Format(time.RFC3339),
+		Timestamp:    base.UnixMilli(),
 		TokensIn:     100,
 		TokensOut:    50,
 		AttemptsJSON: "not-json",
@@ -108,8 +145,8 @@ func TestLogStoreStats_InvalidAttemptsJSON(t *testing.T) {
 	}
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -133,8 +170,8 @@ func TestLogStoreStats_EmptyAttemptsJSON(t *testing.T) {
 	insertTestLog(t, ls, base.Add(1*time.Minute), 100, 50, nil)
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -160,8 +197,8 @@ func TestLogStoreStats_OnlyAttemptNum(t *testing.T) {
 	})
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -187,8 +224,8 @@ func TestLogStoreStats_OutOfRangeEntry(t *testing.T) {
 	insertTestLog(t, ls, base.Add(2*time.Hour), 200, 80, nil)
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -207,8 +244,8 @@ func TestLogStoreStats_InvalidInterval(t *testing.T) {
 	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
 
 	_, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		0,
 	)
 	if err == nil {
@@ -216,8 +253,8 @@ func TestLogStoreStats_InvalidInterval(t *testing.T) {
 	}
 
 	_, err = ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(10*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(10*time.Minute).UnixMilli(),
 		-1,
 	)
 	if err == nil {
@@ -230,8 +267,8 @@ func TestLogStoreStats_StartAfterEnd(t *testing.T) {
 	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
 
 	_, err := ls.Stats(
-		base.Add(10*time.Minute).Format(time.RFC3339),
-		base.Format(time.RFC3339),
+		base.Add(10*time.Minute).UnixMilli(),
+		base.UnixMilli(),
 		10,
 	)
 	if err == nil {
@@ -244,8 +281,8 @@ func TestLogStoreStats_AllEmptyBuckets(t *testing.T) {
 	base := time.Date(2025, 5, 25, 10, 0, 0, 0, time.UTC)
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(30*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(30*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -271,8 +308,8 @@ func TestLogStoreStats_BucketBoundaries(t *testing.T) {
 	insertTestLog(t, ls, base.Add(5*time.Minute), 10, 5, nil)
 
 	stats, err := ls.Stats(
-		base.Format(time.RFC3339),
-		base.Add(20*time.Minute).Format(time.RFC3339),
+		base.UnixMilli(),
+		base.Add(20*time.Minute).UnixMilli(),
 		10,
 	)
 	if err != nil {
@@ -281,29 +318,28 @@ func TestLogStoreStats_BucketBoundaries(t *testing.T) {
 	if len(stats) != 2 {
 		t.Fatalf("expected 2 buckets, got %d", len(stats))
 	}
-	if got := stats[0].Start; got != "2025-05-25T10:00:00Z" {
-		t.Errorf("bucket 0 start: want 2025-05-25T10:00:00Z, got %s", got)
+	if got := stats[0].Start; got != base.UnixMilli() {
+		t.Errorf("bucket 0 start: want %d, got %d", base.UnixMilli(), got)
 	}
-	if got := stats[0].End; got != "2025-05-25T10:10:00Z" {
-		t.Errorf("bucket 0 end: want 2025-05-25T10:10:00Z, got %s", got)
+	if got := stats[0].End; got != base.Add(10*time.Minute).UnixMilli() {
+		t.Errorf("bucket 0 end: want %d, got %d", base.Add(10*time.Minute).UnixMilli(), got)
 	}
-	if got := stats[1].Start; got != "2025-05-25T10:10:00Z" {
-		t.Errorf("bucket 1 start: want 2025-05-25T10:10:00Z, got %s", got)
+	if got := stats[1].Start; got != base.Add(10*time.Minute).UnixMilli() {
+		t.Errorf("bucket 1 start: want %d, got %d", base.Add(10*time.Minute).UnixMilli(), got)
 	}
-	if got := stats[1].End; got != "2025-05-25T10:20:00Z" {
-		t.Errorf("bucket 1 end: want 2025-05-25T10:20:00Z, got %s", got)
+	if got := stats[1].End; got != base.Add(20*time.Minute).UnixMilli() {
+		t.Errorf("bucket 1 end: want %d, got %d", base.Add(20*time.Minute).UnixMilli(), got)
 	}
 }
 
-func TestLogStoreStats_DatetimeLocalFormat(t *testing.T) {
+func TestLogStoreStats_MillisecondRange(t *testing.T) {
 	ls := openTestLogStore(t)
 	base := time.Date(2025, 5, 25, 10, 5, 0, 0, time.UTC)
 	insertTestLog(t, ls, base, 100, 50, nil)
 
-	// datetime-local format: "2025-05-25T10:00" (no seconds, no timezone)
-	stats, err := ls.Stats("2025-05-25T10:00", "2025-05-25T10:10", 10)
+	stats, err := ls.Stats(base.Add(-5*time.Minute).UnixMilli(), base.Add(5*time.Minute).UnixMilli(), 10)
 	if err != nil {
-		t.Fatalf("Stats with datetime-local format should succeed: %v", err)
+		t.Fatalf("Stats with millisecond range should succeed: %v", err)
 	}
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 bucket, got %d", len(stats))
