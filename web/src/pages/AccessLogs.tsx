@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { fetchAccessLogs, fetchAccessLogDetail, fetchAccessLogStats } from '../api/accessLogs'
 import { fetchAPIKeys } from '../api/client'
 import type { AccessLog, APIKeyListItem, AttemptRecord, AccessLogStatsResponse } from '../api/types'
@@ -13,7 +13,19 @@ const STATUS_OPTIONS = [
   { value: 500, label: '500' },
 ]
 
+const formatDatetimeLocal = (d: Date) => {
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const quickRangeValues = (hours: number) => {
+  const now = new Date()
+  const from = new Date(now.getTime() - hours * 60 * 60 * 1000)
+  return { from: formatDatetimeLocal(from), to: formatDatetimeLocal(now) }
+}
+
 export default function AccessLogs() {
+  const initialRange = useRef(quickRangeValues(1))
   const [logs, setLogs] = useState<AccessLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -25,8 +37,8 @@ export default function AccessLogs() {
   const [filterKeyId, setFilterKeyId] = useState<number | undefined>(undefined)
   const [filterModel, setFilterModel] = useState('')
   const [filterStatus, setFilterStatus] = useState(0)
-  const [filterFrom, setFilterFrom] = useState('')
-  const [filterTo, setFilterTo] = useState('')
+  const [filterFrom, setFilterFrom] = useState(initialRange.current.from)
+  const [filterTo, setFilterTo] = useState(initialRange.current.to)
 
   const [apiKeys, setApiKeys] = useState<APIKeyListItem[]>([])
 
@@ -48,6 +60,8 @@ export default function AccessLogs() {
   const [statsData, setStatsData] = useState<AccessLogStatsResponse | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState('')
+  const statsCacheRef = useRef<{ key: string; data: AccessLogStatsResponse } | null>(null)
+  const listAbortRef = useRef<AbortController | null>(null)
 
   const [quickRange, setQuickRangeState] = useState('')
 
@@ -60,12 +74,9 @@ export default function AccessLogs() {
   }
 
   const setQuickRange = (hours: number) => {
-    const now = new Date()
-    const from = new Date(now.getTime() - hours * 60 * 60 * 1000)
-    const pad = (n: number) => n.toString().padStart(2, '0')
-    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-    setFilterFrom(fmt(from))
-    setFilterTo(fmt(now))
+    const range = quickRangeValues(hours)
+    setFilterFrom(range.from)
+    setFilterTo(range.to)
     setQuickRangeState('')
   }
 
@@ -87,32 +98,37 @@ export default function AccessLogs() {
     }
   }
 
+  const isAbortError = (e: unknown) => e instanceof Error && e.name === 'AbortError'
+
   const load = (p: number) => {
+    listAbortRef.current?.abort()
+    const controller = new AbortController()
+    listAbortRef.current = controller
     setLoading(true)
     setError('')
-    fetchAccessLogs(buildQuery(p))
+    fetchAccessLogs(buildQuery(p), controller.signal)
       .then(data => {
         setLogs(data.logs)
         setTotal(data.total)
         setPage(data.page)
       })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .catch(e => {
+        if (!isAbortError(e)) setError(e.message)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
   }
 
   // reload when filters change (reset to page 1)
   useEffect(() => {
-    load(1)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKeyId, filterModel, filterStatus, filterFrom, filterTo])
-
-  // init default time range on first mount
-  useEffect(() => {
-    if (!filterFrom && !filterTo) {
-      setQuickRange(1)
+    const timer = window.setTimeout(() => load(1), 250)
+    return () => {
+      window.clearTimeout(timer)
+      listAbortRef.current?.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [filterKeyId, filterModel, filterStatus, filterFrom, filterTo])
 
   const calculateOptimalInterval = (from: number, to: number): number => {
     const durationMinutes = (to - from) / (60 * 1000)
@@ -131,12 +147,29 @@ export default function AccessLogs() {
       const from = datetimeLocalToMillis(filterFrom)
       const to = datetimeLocalToMillis(filterTo)
       if (from === undefined || to === undefined) return
+      const interval = calculateOptimalInterval(from, to)
+      const cacheKey = `${from}:${to}:${interval}`
+      if (statsCacheRef.current?.key === cacheKey) {
+        setStatsData(statsCacheRef.current.data)
+        setStatsError('')
+        setStatsLoading(false)
+        return
+      }
+      const controller = new AbortController()
       setStatsLoading(true)
       setStatsError('')
-      fetchAccessLogStats({ from, to, interval: calculateOptimalInterval(from, to) })
-        .then(data => setStatsData(data))
-        .catch(e => setStatsError(e.message))
-        .finally(() => setStatsLoading(false))
+      fetchAccessLogStats({ from, to, interval }, controller.signal)
+        .then(data => {
+          statsCacheRef.current = { key: cacheKey, data }
+          setStatsData(data)
+        })
+        .catch(e => {
+          if (!isAbortError(e)) setStatsError(e.message)
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setStatsLoading(false)
+        })
+      return () => controller.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, filterFrom, filterTo])

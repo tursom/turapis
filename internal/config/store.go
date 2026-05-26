@@ -121,6 +121,7 @@ func NewStore(dbPath string, logDBPath ...string) (*Store, error) {
 		} else if n > 0 {
 			slog.Info("access_log_migrated", "from", "sqlite", "to", "pebble", "rows", n)
 		}
+		ls.StartAccessLogV2Backfill(context.Background())
 	}
 	return s, nil
 }
