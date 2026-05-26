@@ -114,6 +114,16 @@ export default function AccessLogs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const calculateOptimalInterval = (from: number, to: number): number => {
+    const durationMinutes = (to - from) / (60 * 1000)
+    const rawInterval = durationMinutes / 40
+    const niceValues = [1, 2, 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 720, 1440]
+    for (const v of niceValues) {
+      if (v >= rawInterval) return v
+    }
+    return niceValues[niceValues.length - 1]
+  }
+
   // load stats when tab switches
   useEffect(() => {
     if (activeTab === 'stats' || activeTab === 'tokens') {
@@ -123,7 +133,7 @@ export default function AccessLogs() {
       if (from === undefined || to === undefined) return
       setStatsLoading(true)
       setStatsError('')
-      fetchAccessLogStats({ from, to, interval: 10 })
+      fetchAccessLogStats({ from, to, interval: calculateOptimalInterval(from, to) })
         .then(data => setStatsData(data))
         .catch(e => setStatsError(e.message))
         .finally(() => setStatsLoading(false))

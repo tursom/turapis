@@ -9,8 +9,17 @@ interface Props {
 
 function getChartData(stats: AccessLogStatsResponse | null) {
   if (!stats || !stats.buckets || stats.buckets.length === 0) return []
+  const first = stats.buckets[0].start
+  const last = stats.buckets[stats.buckets.length - 1].end
+  const spanOver24h = (last - first) > 24 * 60 * 60 * 1000
+  const fmt = (ts: number) => {
+    const d = new Date(ts)
+    const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    if (!spanOver24h) return hm
+    return `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')} ${hm}`
+  }
   return stats.buckets.map(b => ({
-    time: new Date(b.start).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+    time: fmt(b.start),
     '有故障转移': b.count_with_failover,
     '无故障转移': b.count_without_failover,
     '有故障转移Token': b.tokens_in_with_failover + b.tokens_out_with_failover,
