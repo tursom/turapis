@@ -75,6 +75,12 @@ func main() {
 				prov.SetSearXNG(searxngURL)
 			}
 			registry.Register(prov)
+		case "codex":
+			prov := po.NewCodex(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+			if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
+				prov.SetSearXNG(searxngURL)
+			}
+			registry.Register(prov)
 		case "anthropic":
 			registry.Register(pa.New(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy))
 		}
