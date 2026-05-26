@@ -25,7 +25,6 @@ const quickRangeValues = (hours: number) => {
 }
 
 export default function AccessLogs() {
-  const initialRange = useRef(quickRangeValues(1))
   const [logs, setLogs] = useState<AccessLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -37,8 +36,8 @@ export default function AccessLogs() {
   const [filterKeyId, setFilterKeyId] = useState<number | undefined>(undefined)
   const [filterModel, setFilterModel] = useState('')
   const [filterStatus, setFilterStatus] = useState(0)
-  const [filterFrom, setFilterFrom] = useState(initialRange.current.from)
-  const [filterTo, setFilterTo] = useState(initialRange.current.to)
+  const [filterFrom, setFilterFrom] = useState('')
+  const [filterTo, setFilterTo] = useState('')
 
   const [apiKeys, setApiKeys] = useState<APIKeyListItem[]>([])
 
@@ -63,7 +62,7 @@ export default function AccessLogs() {
   const statsCacheRef = useRef<{ key: string; data: AccessLogStatsResponse } | null>(null)
   const listAbortRef = useRef<AbortController | null>(null)
 
-  const [quickRange, setQuickRangeState] = useState('')
+  const [quickRange, setQuickRangeState] = useState('all')
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
@@ -341,8 +340,9 @@ export default function AccessLogs() {
       }}>
         <label style={{ fontSize: 12, color: '#666' }}>
           时间范围
-          <select value={quickRange} onChange={e => { const v = e.target.value; if (v) { setQuickRange(Number(v)); } }}
+          <select value={quickRange} onChange={e => { const v = e.target.value; if (v === 'all') { setFilterFrom(''); setFilterTo(''); setQuickRangeState('all'); } else if (v) { setQuickRange(Number(v)); } }}
             style={{ display: 'block', marginTop: 4, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4, fontSize: 13 }}>
+            <option value="all">全部</option>
             <option value="">自定义</option>
             <option value="1">最近 1 小时</option>
             <option value="12">最近 12 小时</option>

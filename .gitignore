@@ -29,6 +29,7 @@ web/dist/
 
 /data
 
+.agents
 .codex
 .sisyphus
 

@@ -42,7 +42,7 @@ export default function AccessLogChart({ data, mode }: Props) {
         <BarChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} barCategoryGap="30%">
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="time" />
-          <YAxis />
+          <YAxis tickFormatter={(value: number) => value.toLocaleString('en-US')} />
           <Tooltip />
           <Legend />
           <Bar dataKey={isToken ? '有故障转移Token' : '有故障转移'} stackId="stack" fill={isToken ? '#faad14' : '#ff4d4f'} maxBarSize={60} />
