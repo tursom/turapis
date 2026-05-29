@@ -23,6 +23,7 @@ type gatewayRawProvider struct {
 	body       string
 	header     http.Header
 	statusCode int
+	rawCalls   int
 }
 
 func (p *gatewayRawProvider) Name() string { return p.name }
@@ -49,6 +50,7 @@ func (p *gatewayRawProvider) SetAPIKey(string) {}
 func (p *gatewayRawProvider) SupportsTool(string) bool { return true }
 
 func (p *gatewayRawProvider) RawResponsesStream(context.Context, []byte) (*http.Response, error) {
+	p.rawCalls++
 	header := p.header
 	if header == nil {
 		header = http.Header{}
@@ -170,6 +172,72 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 		t.Fatalf("stored quota = %v, want refreshed quota", rawQuota)
 	}
 	assertQuotaUsed(t, string(*rawQuota), 42)
+}
+
+func TestRawResponsesProxyDoesNotRequireCodexUserAgent(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	registry := provider.NewRegistry()
+	rawBody := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"
+	p := &gatewayRawProvider{name: "codex-raw-no-ua", body: rawBody}
+	createRawProvider(t, store, p, 10, `{"tokens":{"access_token":"test-token"}}`)
+	registry.Register(p)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	authorizeAPIRequest(t, store, req)
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != rawBody {
+		t.Fatalf("raw response body changed:\ngot  %q\nwant %q", rec.Body.String(), rawBody)
+	}
+	if p.rawCalls != 1 {
+		t.Fatalf("raw calls = %d, want 1", p.rawCalls)
+	}
+}
+
+func TestRawResponsesProxyChecksModelPermissionBeforeUpstream(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	registry := provider.NewRegistry()
+	p := &gatewayRawProvider{name: "codex-raw-forbidden", body: "should not be called"}
+	createRawProvider(t, store, p, 10, `{"tokens":{"access_token":"test-token"}}`)
+	registry.Register(p)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	authorizeRestrictedAPIRequest(t, store, req, `{"allowed_models":["other-model"]}`)
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "model gpt-5.4 is not allowed") {
+		t.Fatalf("body = %s, want model permission error", rec.Body.String())
+	}
+	if p.rawCalls != 0 {
+		t.Fatalf("raw calls = %d, want 0", p.rawCalls)
+	}
 }
 
 func TestRawResponsesProxySkipsBodiesWhenAccessLogSaveBodiesDisabled(t *testing.T) {
@@ -372,13 +440,29 @@ func createRawProvider(t *testing.T, store *config.Store, p *gatewayRawProvider,
 }
 
 func authorizeCodexRequest(t *testing.T, store *config.Store, req *http.Request) {
+	authorizeAPIRequest(t, store, req)
+	req.Header.Set("User-Agent", "codex_cli_rs/0.130.0")
+}
+
+func authorizeAPIRequest(t *testing.T, store *config.Store, req *http.Request) {
 	t.Helper()
 	key, err := store.CreateAPIKey("test-client")
 	if err != nil {
 		t.Fatalf("create client api key: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+key.Key)
-	req.Header.Set("User-Agent", "codex_cli_rs/0.130.0")
+}
+
+func authorizeRestrictedAPIRequest(t *testing.T, store *config.Store, req *http.Request, permissions string) {
+	t.Helper()
+	key, err := store.CreateAPIKey("restricted-client")
+	if err != nil {
+		t.Fatalf("create client api key: %v", err)
+	}
+	if err := store.UpdateAPIKey(key.ID, key.Name, true, permissions); err != nil {
+		t.Fatalf("update client api key permissions: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key.Key)
 }
 
 func assertQuotaUsed(t *testing.T, raw string, want float64) {

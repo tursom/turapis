@@ -28,7 +28,14 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if shouldUseRawResponsesProxy(r) {
-		g.handleRawResponsesProxy(w, r, bodyBytes)
+		model := rawResponsesModel(bodyBytes)
+		if code, body := checkModelAllowed(r.Context(), model); code != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			w.Write([]byte(body))
+			return
+		}
+		g.handleRawResponsesProxy(w, r, bodyBytes, model)
 		return
 	}
 
@@ -85,7 +92,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldUseRawResponsesProxy(r *http.Request) bool {
-	return r.URL.Path == "/v1/responses" && models.CodexVersionFromContext(r.Context()) != ""
+	return r.URL.Path == "/v1/responses"
 }
 
 type streamState struct {
@@ -449,7 +456,7 @@ func splitNamespaceName(fullName string) (name, ns string) {
 	return fullName[:idx], fullName[idx+2:]
 }
 
-func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {
+func rawResponsesModel(bodyBytes []byte) string {
 	model := "gpt-5.4"
 	var probe struct {
 		Model string `json:"model"`
@@ -457,7 +464,10 @@ func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request
 	if json.Unmarshal(bodyBytes, &probe) == nil && probe.Model != "" {
 		model = probe.Model
 	}
+	return model
+}
 
+func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request, bodyBytes []byte, model string) {
 	ctx := ctxWithAttemptRecorder(r.Context())
 
 	result, err := g.router.RouteRawStream(ctx, model, bodyBytes)
