@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -469,11 +470,37 @@ func rawResponsesModel(bodyBytes []byte) string {
 
 func (g *Gateway) handleRawResponsesProxy(w http.ResponseWriter, r *http.Request, bodyBytes []byte, model string) {
 	ctx := ctxWithAttemptRecorder(r.Context())
+	if c := collectorFromContext(r.Context()); c != nil {
+		c.SetModel(model)
+	}
 
 	result, err := g.router.RouteRawStream(ctx, model, bodyBytes)
 	if err != nil {
 		slog.Error("raw_proxy_failed", "error", err)
-		http.Error(w, `{"error":{"message":"`+err.Error()+`","type":"api_error"}}`, http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		errorBody := map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": err.Error(),
+				"type":    "api_error",
+			},
+		}
+		var ue *models.UpstreamError
+		if errors.As(err, &ue) && ue.StatusCode > 0 {
+			status = ue.StatusCode
+			errorBody["error"].(map[string]interface{})["status_code"] = ue.StatusCode
+			if len(ue.Body) > 0 {
+				errorBody["error"].(map[string]interface{})["upstream_body"] = string(ue.Body)
+			}
+		}
+		if c := collectorFromContext(r.Context()); c != nil {
+			c.SetError(err.Error())
+			if ue != nil && len(ue.Body) > 0 {
+				c.SetUpstreamResp(string(ue.Body))
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(errorBody)
 		return
 	}
 	defer result.Body.Close()

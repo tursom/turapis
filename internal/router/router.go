@@ -153,6 +153,7 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 	}
 	attemptNum := 0
 	skippedCooldown := 0
+	var lastErr error
 	for _, p := range chain {
 		type rawStreamer interface {
 			RawResponsesStream(ctx context.Context, rawBody []byte) (*http.Response, error)
@@ -175,14 +176,21 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 			if err != nil {
 				recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, attemptNum)
 				r.markProviderFailure(p.ID(), statusCodeFromErr(err))
+				lastErr = err
 				continue
 			}
 			r.saveQuotaFromHeaders(p.ID(), resp.Header)
 			quotaAfter := r.getProviderQuotaJSON(p.ID())
 			if resp.StatusCode != 200 {
-				recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, attemptNum)
-				_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
 				resp.Body.Close()
+				upstreamErr := &models.UpstreamError{
+					StatusCode: resp.StatusCode,
+					Body:       body,
+					Err:        fmt.Errorf("upstream returned %d", resp.StatusCode),
+				}
+				recordAttempt(ctx, p.Name(), resp.StatusCode, upstreamErr, duration, quotaBefore, quotaAfter, false, attemptNum)
+				lastErr = upstreamErr
 				if isAuthStatus(resp.StatusCode) {
 					if refreshed, refreshErr := r.refreshOAuthProviderIfNeeded(p, true); refreshErr == nil && refreshed {
 						attemptNum++
@@ -192,6 +200,7 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 						duration = time.Since(start)
 						if err != nil {
 							recordAttempt(ctx, p.Name(), 0, err, duration, quotaBefore, "", false, attemptNum)
+							lastErr = err
 							continue
 						}
 						r.saveQuotaFromHeaders(p.ID(), resp.Header)
@@ -205,9 +214,15 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 								QuotaAfter:   quotaAfter,
 							}, nil
 						}
-						recordAttempt(ctx, p.Name(), resp.StatusCode, fmt.Errorf("upstream returned %d", resp.StatusCode), duration, quotaBefore, quotaAfter, false, attemptNum)
-						_, _ = io.ReadAll(io.LimitReader(resp.Body, 65536))
+						body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
 						resp.Body.Close()
+						upstreamErr := &models.UpstreamError{
+							StatusCode: resp.StatusCode,
+							Body:       body,
+							Err:        fmt.Errorf("upstream returned %d", resp.StatusCode),
+						}
+						recordAttempt(ctx, p.Name(), resp.StatusCode, upstreamErr, duration, quotaBefore, quotaAfter, false, attemptNum)
+						lastErr = upstreamErr
 					}
 				}
 				continue
@@ -220,6 +235,12 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 				QuotaAfter:   quotaAfter,
 			}, nil
 		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	if skippedCooldown > 0 {
+		return nil, fmt.Errorf("all providers are cooling down")
 	}
 	return nil, fmt.Errorf("no raw stream provider available")
 }

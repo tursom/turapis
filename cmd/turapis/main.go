@@ -59,10 +59,12 @@ func main() {
 	for i := range dbProviders {
 		p := &dbProviders[i]
 		apiKey := p.APIKey
+		accountID := ""
 		if p.AuthMode == "oauth" {
 			if at := provider.ExtractOAuthAccessToken(p.APIKey); at != "" {
 				apiKey = at
 			}
+			accountID = provider.ExtractOAuthAccountID(p.APIKey)
 		}
 		var supportedTools []string
 		if p.SupportedTools != "" {
@@ -76,7 +78,7 @@ func main() {
 			}
 			registry.Register(prov)
 		case "codex":
-			prov := po.NewCodex(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+			prov := po.NewCodexWithAccountID(p.ID, p.Name, p.BaseURL, apiKey, accountID, supportedTools, p.Proxy)
 			if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 				prov.SetSearXNG(searxngURL)
 			}
@@ -103,5 +105,3 @@ func main() {
 		slog.Error("server stopped", "error", err)
 	}
 }
-
-

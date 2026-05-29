@@ -119,10 +119,12 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 		return
 	}
 	apiKey := p.APIKey
+	accountID := ""
 	if p.AuthMode == "oauth" {
 		if at := provider.ExtractOAuthAccessToken(p.APIKey); at != "" {
 			apiKey = at
 		}
+		accountID = provider.ExtractOAuthAccountID(p.APIKey)
 	}
 	var supportedTools []string
 	if p.SupportedTools != "" {
@@ -137,7 +139,7 @@ func (a *Admin) registerProviderInstance(p *config.Provider) {
 		}
 		prov = op
 	case "codex":
-		op := openai.NewCodex(p.ID, p.Name, p.BaseURL, apiKey, supportedTools, p.Proxy)
+		op := openai.NewCodexWithAccountID(p.ID, p.Name, p.BaseURL, apiKey, accountID, supportedTools, p.Proxy)
 		if searxngURL := os.Getenv("SEARXNG_URL"); searxngURL != "" {
 			op.SetSearXNG(searxngURL)
 		}

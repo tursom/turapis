@@ -21,17 +21,18 @@ import (
 
 // OpenAIProvider 实现 OpenAI 协议的 Provider
 type OpenAIProvider struct {
-	id             int
-	name           string
-	protocol       models.ProtocolType
-	url            string
-	apiKey         atomic.Value
-	client         *http.Client
-	supportedTools map[string]bool
-	searxngURL     string
-	nsMap          map[string]string
-	quotaMu        sync.RWMutex
-	lastQuota      map[string]interface{}
+	id               int
+	name             string
+	protocol         models.ProtocolType
+	url              string
+	apiKey           atomic.Value
+	chatGPTAccountID string
+	client           *http.Client
+	supportedTools   map[string]bool
+	searxngURL       string
+	nsMap            map[string]string
+	quotaMu          sync.RWMutex
+	lastQuota        map[string]interface{}
 	// lastRawBody 缓存 ChatCompletionStream 对 codex Responses API 调用
 	// 返回的原始 SSE 响应体，由 TakeRawBody 取走并清空。
 	lastRawBody io.ReadCloser
@@ -43,7 +44,14 @@ func New(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL
 
 // NewCodex creates an OpenAIProvider with codex protocol for codex-specific routing.
 func NewCodex(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string) *OpenAIProvider {
-	return newOpenAIProvider(id, name, baseURL, apiKey, supportedTools, proxyURL, models.ProtocolCodex)
+	return NewCodexWithAccountID(id, name, baseURL, apiKey, "", supportedTools, proxyURL)
+}
+
+// NewCodexWithAccountID creates a Codex provider bound to a ChatGPT account id.
+func NewCodexWithAccountID(id int, name, baseURL, apiKey, accountID string, supportedTools []string, proxyURL string) *OpenAIProvider {
+	p := newOpenAIProvider(id, name, baseURL, apiKey, supportedTools, proxyURL, models.ProtocolCodex)
+	p.chatGPTAccountID = accountID
+	return p
 }
 
 func newOpenAIProvider(id int, name, baseURL, apiKey string, supportedTools []string, proxyURL string, protocol models.ProtocolType) *OpenAIProvider {
@@ -86,6 +94,21 @@ func (p *OpenAIProvider) getAPIKey() string {
 		return v
 	}
 	return ""
+}
+
+func (p *OpenAIProvider) setCodexHeaders(req *http.Request, ctx context.Context) {
+	v := codexVersion(ctx)
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", v)
+	req.Header.Set("User-Agent", "codex_cli_rs/"+v)
+	req.Header.Del("ChatGPT-Account-Id")
+	if p.chatGPTAccountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", p.chatGPTAccountID)
+		return
+	}
+	if p.Protocol() == models.ProtocolCodex {
+		slog.Warn("codex_account_id_missing", "provider", p.name)
+	}
 }
 
 func (p *OpenAIProvider) buildNamespaceMap(tools json.RawMessage) {
@@ -437,6 +460,9 @@ func (p *OpenAIProvider) doGetWithHeaders(ctx context.Context, path string, head
 	}
 	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if p.Protocol() == models.ProtocolCodex || isJWTKey(apiKey) {
+		p.setCodexHeaders(req, ctx)
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -459,11 +485,8 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, path string, body interf
 	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	if isJWTKey(apiKey) {
-		v := codexVersion(ctx)
-		req.Header.Set("Originator", "codex_cli_rs")
-		req.Header.Set("Version", v)
-		req.Header.Set("User-Agent", "codex_cli_rs/"+v)
+	if p.Protocol() == models.ProtocolCodex || isJWTKey(apiKey) {
+		p.setCodexHeaders(req, ctx)
 	}
 
 	resp, err := p.client.Do(req)
@@ -1035,9 +1058,7 @@ func (p *OpenAIProvider) RawResponsesStream(ctx context.Context, rawBody []byte)
 	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("Version", codexVersion(ctx))
-	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))
+	p.setCodexHeaders(req, ctx)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Connection", "Keep-Alive")
 	req.Header.Set("OpenAI-Beta", "responses-2025-03-11")
@@ -1057,9 +1078,7 @@ func (p *OpenAIProvider) responsesStreamRaw(ctx context.Context, rawBody []byte)
 	provider.ForwardClientHeaders(req, ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("Version", codexVersion(ctx))
-	req.Header.Set("User-Agent", "codex_cli_rs/"+codexVersion(ctx))
+	p.setCodexHeaders(req, ctx)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Connection", "Keep-Alive")
 	req.Header.Set("OpenAI-Beta", "responses-2025-03-11")

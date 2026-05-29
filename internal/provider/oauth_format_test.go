@@ -48,6 +48,42 @@ func TestExtractOAuthAccessToken(t *testing.T) {
 	}
 }
 
+func TestExtractOAuthAccountID(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiKey string
+		want   string
+	}{
+		{
+			name:   "top level",
+			apiKey: `{"account_id":"auth0|top","credential":{"tokens":{"access_token":"eyJ"}}}`,
+			want:   "auth0|top",
+		},
+		{
+			name:   "credential tokens",
+			apiKey: `{"credential":{"tokens":{"access_token":"eyJ","account_id":"auth0|credential"}}}`,
+			want:   "auth0|credential",
+		},
+		{
+			name:   "old tokens",
+			apiKey: `{"tokens":{"access_token":"eyJ","account_id":"auth0|old"}}`,
+			want:   "auth0|old",
+		},
+		{
+			name:   "invalid",
+			apiKey: `not json`,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtractOAuthAccountID(tt.apiKey); got != tt.want {
+				t.Fatalf("account id = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeOAuthCredential(t *testing.T) {
 	newFmt := `{"email":"t@test.com","credential":{"tokens":{"access_token":"eyJtest"}}}`
 	norm := NormalizeOAuthCredential(newFmt)

@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -347,6 +348,37 @@ func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
 	}
 	if result.QuotaAfter != result.QuotaBefore {
 		t.Fatalf("quota after = %q, want unchanged quota %q", result.QuotaAfter, result.QuotaBefore)
+	}
+}
+
+func TestRouteRawStreamPreservesUpstreamErrorBody(t *testing.T) {
+	store, registry, r := setupRouterTest(t)
+	p := &testProvider{
+		name: "raw-provider-forbidden",
+		rawResp: &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"forbidden"}`)),
+		},
+	}
+	registerTestProvider(t, store, registry, p, 10)
+
+	result, err := r.RouteRawStream(context.Background(), "gpt-test", []byte(`{"model":"gpt-test"}`))
+	if err == nil {
+		if result != nil && result.Body != nil {
+			result.Body.Close()
+		}
+		t.Fatal("expected upstream error")
+	}
+	var ue *models.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("error = %T %[1]v, want UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", ue.StatusCode)
+	}
+	if string(ue.Body) != `{"error":"forbidden"}` {
+		t.Fatalf("body = %q", string(ue.Body))
 	}
 }
 

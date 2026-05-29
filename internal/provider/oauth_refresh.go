@@ -65,6 +65,29 @@ func ExtractOAuthAccessToken(apiKey string) string {
 	return at
 }
 
+// ExtractOAuthAccountID extracts the ChatGPT account id from OAuth credentials.
+// It supports both codex-login output and the stored credential formats.
+func ExtractOAuthAccountID(apiKey string) string {
+	var creds map[string]interface{}
+	if json.Unmarshal([]byte(apiKey), &creds) != nil {
+		return ""
+	}
+	if accountID := stringValue(creds["account_id"]); accountID != "" {
+		return accountID
+	}
+	if cr, ok := creds["credential"].(map[string]interface{}); ok {
+		if t, ok := cr["tokens"].(map[string]interface{}); ok {
+			if accountID := stringValue(t["account_id"]); accountID != "" {
+				return accountID
+			}
+		}
+	}
+	if t, ok := creds["tokens"].(map[string]interface{}); ok {
+		return stringValue(t["account_id"])
+	}
+	return ""
+}
+
 // NormalizeOAuthCredential 将任意 OAuth 凭证 JSON 规范化为旧格式 {"tokens":{...}}。
 // 如果输入不是 JSON 或解析失败，返回空字符串。
 func NormalizeOAuthCredential(apiKey string) string {

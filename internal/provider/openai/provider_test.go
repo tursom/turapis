@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/tursom/turapis/internal/models"
@@ -396,5 +398,47 @@ func TestNewCodex_HasCodexProtocol(t *testing.T) {
 	p := NewCodex(2, "codex-upstream", "https://chatgpt.com/backend-api/codex", "eyJtest", nil, "")
 	if p.Protocol() != models.ProtocolCodex {
 		t.Fatalf("NewCodex() provider should have protocol=codex, got %s", p.Protocol())
+	}
+}
+
+func TestRawResponsesStreamSendsChatGPTAccountID(t *testing.T) {
+	var got http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %s, want /responses", r.URL.Path)
+		}
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.completed\n\n"))
+	}))
+	defer ts.Close()
+
+	p := NewCodexWithAccountID(2, "codex-upstream", ts.URL, "access-token", "auth0|account", nil, "")
+	ctx := models.WithCodexVersion(context.Background(), "0.130.0")
+	resp, err := p.RawResponsesStream(ctx, []byte(`{"model":"gpt-test"}`))
+	if err != nil {
+		t.Fatalf("raw responses stream: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if got.Get("Authorization") != "Bearer access-token" {
+		t.Fatalf("authorization = %q", got.Get("Authorization"))
+	}
+	if got.Get("Chatgpt-Account-Id") != "auth0|account" {
+		t.Fatalf("ChatGPT-Account-Id = %q", got.Get("Chatgpt-Account-Id"))
+	}
+	if got.Get("Originator") != "codex_cli_rs" {
+		t.Fatalf("originator = %q", got.Get("Originator"))
+	}
+	if got.Get("Version") != "0.130.0" {
+		t.Fatalf("version = %q", got.Get("Version"))
+	}
+	if got.Get("Openai-Beta") != "responses-2025-03-11" {
+		t.Fatalf("openai beta = %q", got.Get("Openai-Beta"))
+	}
+	if got.Get("Accept") != "text/event-stream" {
+		t.Fatalf("accept = %q", got.Get("Accept"))
 	}
 }

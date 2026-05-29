@@ -240,6 +240,67 @@ func TestRawResponsesProxyChecksModelPermissionBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestRawResponsesProxyPreservesUpstreamForbiddenInAccessLog(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	registry := provider.NewRegistry()
+	p := &gatewayRawProvider{
+		name:       "codex-raw-upstream-forbidden",
+		body:       `{"error":"missing account"}`,
+		statusCode: http.StatusForbidden,
+	}
+	createRawProvider(t, store, p, 10, `{"tokens":{"access_token":"test-token"}}`)
+	registry.Register(p)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	authorizeCodexRequest(t, store, req)
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "missing account") {
+		t.Fatalf("body = %s, want upstream body", rec.Body.String())
+	}
+
+	logs, total, err := store.QueryAccessLogs(config.AccessLogQuery{Page: 1, PerPage: 10})
+	if err != nil {
+		t.Fatalf("query access logs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("logs total/len = %d/%d, want 1/1", total, len(logs))
+	}
+	got := logs[0]
+	if got.StatusCode != http.StatusForbidden {
+		t.Fatalf("logged status = %d, want 403", got.StatusCode)
+	}
+	if got.Model != "gpt-5.4" {
+		t.Fatalf("model = %q, want gpt-5.4", got.Model)
+	}
+	if got.ErrorMsg == "" {
+		t.Fatal("error_msg should be recorded")
+	}
+	if got.UpstreamResp != `{"error":"missing account"}` {
+		t.Fatalf("upstream_resp = %q", got.UpstreamResp)
+	}
+	var attempts []config.AttemptRecord
+	if err := json.Unmarshal([]byte(got.AttemptsJSON), &attempts); err != nil {
+		t.Fatalf("unmarshal attempts: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusForbidden || attempts[0].Success {
+		t.Fatalf("attempts = %#v, want one failed 403 attempt", attempts)
+	}
+}
+
 func TestRawResponsesProxySkipsBodiesWhenAccessLogSaveBodiesDisabled(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
