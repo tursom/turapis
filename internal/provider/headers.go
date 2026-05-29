@@ -10,6 +10,7 @@ import (
 
 var skipHeaderKeys = map[string]bool{
 	"host":              true,
+	"accept-encoding":   true,
 	"content-length":    true,
 	"transfer-encoding": true,
 }

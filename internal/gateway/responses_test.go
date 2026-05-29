@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -249,9 +251,11 @@ func TestRawResponsesProxyPreservesUpstreamForbiddenInAccessLog(t *testing.T) {
 	defer store.Close()
 
 	registry := provider.NewRegistry()
+	body := gzipGatewayTestBody(t, `{"error":"missing account"}`)
 	p := &gatewayRawProvider{
 		name:       "codex-raw-upstream-forbidden",
-		body:       `{"error":"missing account"}`,
+		body:       string(body),
+		header:     http.Header{"Content-Encoding": []string{"gzip"}},
 		statusCode: http.StatusForbidden,
 	}
 	createRawProvider(t, store, p, 10, `{"tokens":{"access_token":"test-token"}}`)
@@ -286,6 +290,9 @@ func TestRawResponsesProxyPreservesUpstreamForbiddenInAccessLog(t *testing.T) {
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("model = %q, want gpt-5.4", got.Model)
 	}
+	if got.ProviderName != p.name {
+		t.Fatalf("provider = %q, want %q", got.ProviderName, p.name)
+	}
 	if got.ErrorMsg == "" {
 		t.Fatal("error_msg should be recorded")
 	}
@@ -299,6 +306,19 @@ func TestRawResponsesProxyPreservesUpstreamForbiddenInAccessLog(t *testing.T) {
 	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusForbidden || attempts[0].Success {
 		t.Fatalf("attempts = %#v, want one failed 403 attempt", attempts)
 	}
+}
+
+func gzipGatewayTestBody(t *testing.T, body string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(body)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func TestRawResponsesProxySkipsBodiesWhenAccessLogSaveBodiesDisabled(t *testing.T) {

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -182,7 +183,7 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 			r.saveQuotaFromHeaders(p.ID(), resp.Header)
 			quotaAfter := r.getProviderQuotaJSON(p.ID())
 			if resp.StatusCode != 200 {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+				body, _ := readLimitedResponseBody(resp, 65536)
 				resp.Body.Close()
 				upstreamErr := &models.UpstreamError{
 					StatusCode: resp.StatusCode,
@@ -214,7 +215,7 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 								QuotaAfter:   quotaAfter,
 							}, nil
 						}
-						body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+						body, _ := readLimitedResponseBody(resp, 65536)
 						resp.Body.Close()
 						upstreamErr := &models.UpstreamError{
 							StatusCode: resp.StatusCode,
@@ -243,6 +244,21 @@ func (r *Router) RouteRawStream(ctx context.Context, modelName string, rawBody [
 		return nil, fmt.Errorf("all providers are cooling down")
 	}
 	return nil, fmt.Errorf("no raw stream provider available")
+}
+
+func readLimitedResponseBody(resp *http.Response, limit int64) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, nil
+	}
+	reader := io.Reader(resp.Body)
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err == nil {
+			defer gz.Close()
+			reader = gz
+		}
+	}
+	return io.ReadAll(io.LimitReader(reader, limit))
 }
 
 // routeStreamToResult 流式路由的兼容包装（当 caller 以非流式方式调用流式请求时）

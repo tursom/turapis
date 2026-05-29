@@ -1,6 +1,8 @@
 package router
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -353,12 +355,13 @@ func TestRouteRawStreamKeepsStoredQuotaWhenHeadersMissing(t *testing.T) {
 
 func TestRouteRawStreamPreservesUpstreamErrorBody(t *testing.T) {
 	store, registry, r := setupRouterTest(t)
+	body := gzipTestBody(t, `{"error":"forbidden"}`)
 	p := &testProvider{
 		name: "raw-provider-forbidden",
 		rawResp: &http.Response{
 			StatusCode: http.StatusForbidden,
-			Header:     http.Header{},
-			Body:       io.NopCloser(strings.NewReader(`{"error":"forbidden"}`)),
+			Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
 		},
 	}
 	registerTestProvider(t, store, registry, p, 10)
@@ -380,6 +383,19 @@ func TestRouteRawStreamPreservesUpstreamErrorBody(t *testing.T) {
 	if string(ue.Body) != `{"error":"forbidden"}` {
 		t.Fatalf("body = %q", string(ue.Body))
 	}
+}
+
+func gzipTestBody(t *testing.T, body string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(body)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func TestRouteNonStreamRefreshesExpiringOAuthBeforeRequest(t *testing.T) {

@@ -272,6 +272,13 @@ func (c *AccessLogCollector) Model() string {
 func (c *AccessLogCollector) ProviderName() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.providerName == "" {
+		for i := len(c.attempts) - 1; i >= 0; i-- {
+			if c.attempts[i].Provider != "" {
+				return c.attempts[i].Provider
+			}
+		}
+	}
 	return c.providerName
 }
 
