@@ -38,6 +38,7 @@ func (a *Admin) Routes() http.Handler {
 		r.Get("/providers/{id}", a.getProvider)
 		r.Get("/model-mappings", a.listModelMappings)
 		r.Get("/settings", a.getSettings)
+		r.Get("/config", a.getConfig)
 		r.Get("/status", a.getStatus)
 		r.Get("/api-keys", a.listAPIKeys)
 		r.Get("/access-logs", a.listAccessLogs)
@@ -69,6 +70,7 @@ func (a *Admin) Routes() http.Handler {
 		r.Post("/providers/{id}/discover", a.discoverModels)
 
 		r.Put("/settings", a.updateSettings)
+		r.Put("/config", a.updateConfig)
 
 		r.Post("/api-keys", a.createAPIKey)
 		r.Put("/api-keys/{id}", a.updateAPIKey)

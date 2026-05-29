@@ -402,6 +402,24 @@ func (s *Store) SetSetting(key, value string) error {
 	return nil
 }
 
+// GetAllSettings 返回所有全局设置
+func (s *Store) GetAllSettings() (map[string]string, error) {
+	rows, err := s.DB.Query("SELECT key, value FROM global_settings ORDER BY key")
+	if err != nil {
+		return nil, fmt.Errorf("get all settings: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scan setting row: %w", err)
+		}
+		result[key] = value
+	}
+	return result, rows.Err()
+}
+
 // GetProvidersForModel 返回支持指定模型的 provider ID 集合
 func (s *Store) GetProvidersForModel(modelName string) (map[int]bool, error) {
 	var ids []int

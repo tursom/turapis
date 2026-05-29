@@ -201,3 +201,14 @@ export function updateUser(id: number, data: { username?: string; password?: str
 export function deleteUser(id: number) {
   return request<{ status: string }>(`/admin/users/${id}`, { method: 'DELETE' })
 }
+
+export function fetchConfig() {
+  return request<Record<string, string>>('/admin/config')
+}
+
+export function updateConfigSetting(key: string, value: string) {
+  return request<{ status: string }>('/admin/config', {
+    method: 'PUT',
+    body: JSON.stringify({ key, value }),
+  })
+}

@@ -172,3 +172,11 @@ export interface AccessLogStatsResponse {
   buckets: BucketStat[]
 }
 
+export interface ConfigEntry {
+  key: string
+  value: string
+  type: 'string' | 'number' | 'json'
+  description: string
+  editable: boolean
+}
+

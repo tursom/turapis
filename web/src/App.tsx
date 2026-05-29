@@ -10,6 +10,7 @@ import {
   LogoutOutlined,
   ApiOutlined,
   UserOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
@@ -20,6 +21,7 @@ import ApiKeys from './pages/ApiKeys'
 import Sites from './pages/Sites'
 import AccessLogs from './pages/AccessLogs'
 import Users from './pages/Users'
+import Config from './pages/Config'
 
 
 const { Sider, Content } = Layout
@@ -32,6 +34,7 @@ const menuItems = [
   { key: '/sites', icon: <GlobalOutlined />, label: '站点管理' },
   { key: '/access-logs', icon: <FileTextOutlined />, label: '访问日志' },
   { key: '/users', icon: <UserOutlined />, label: '用户管理' },
+  { key: '/config', icon: <SettingOutlined />, label: '全局配置' },
 ]
 
 function ProtectedLayout() {
@@ -129,6 +132,7 @@ export default function App() {
               <Route path="/sites" element={<Sites />} />
               <Route path="/access-logs" element={<AccessLogs />} />
               <Route path="/users" element={<Users />} />
+              <Route path="/config" element={<Config />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
