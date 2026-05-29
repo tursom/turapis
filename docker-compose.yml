@@ -1,6 +1,7 @@
 services:
   turapis:
     build: .
+    image: ghcr.io/tursom/turapis:latest
     container_name: turapis
     restart: unless-stopped
     ports:
