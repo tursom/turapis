@@ -790,13 +790,16 @@ HTTP 200
 
 ### 8.1 API Key 鉴权
 
-所有 AI API 端点（`/v1/*`）支持可选的 Bearer Token 鉴权：
+所有 AI API 端点（`/v1/*`）必须使用本地 API Key 进行 Bearer Token 鉴权：
 
 | Header | 行为 |
 |--------|------|
-| 无 `Authorization` | 放行（向后兼容），响应头 `X-Api-Key-Auth: missing` |
-| `Authorization: Bearer eyJ...` (JWT) | JWT 透传（不校验），响应头 `X-Api-Key-Auth: jwt-passthrough` |
-| `Authorization: Bearer sk-...` | 查询 `api_keys` 表校验，不匹配返回 401 |
+| 无 `Authorization` | 返回 401，响应头 `X-Api-Key-Auth: missing` |
+| 非 `Bearer` 或空 `Bearer` | 返回 401，响应头 `X-Api-Key-Auth: malformed` / `empty` |
+| `Authorization: Bearer eyJ...` (JWT) | 不再透传；未登记为本地 API Key 时返回 401 |
+| `Authorization: Bearer sk-...` | 查询 `api_keys` 表校验；启用且匹配时放行，否则返回 401 |
+
+Codex CLI / raw Responses API 透传场景同样必须使用本地 `sk-...` API Key；上游请求仍使用 Provider 自身凭据。
 
 ### 8.2 故障转移触发条件
 

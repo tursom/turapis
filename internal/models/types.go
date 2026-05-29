@@ -52,7 +52,6 @@ type ctxKey int
 const (
 	ctxKeyRawBody ctxKey = iota
 	ctxKeyCodexVersion
-	ctxKeyRawProxy
 	ctxKeyKeyPermissions
 	ctxKeySessionUserID
 	ctxKeySessionRole
@@ -150,15 +149,6 @@ func RawResponseBodyFromContext(ctx context.Context) io.ReadCloser {
 		return b
 	}
 	return nil
-}
-
-func WithRawProxy(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeyRawProxy, true)
-}
-
-func RawProxyFromContext(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKeyRawProxy).(bool)
-	return v
 }
 
 func WithClientHeaders(ctx context.Context, h http.Header) context.Context {

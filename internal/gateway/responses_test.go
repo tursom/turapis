@@ -122,7 +122,7 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 
 	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
-	req.Header.Set("Authorization", "Bearer eyJ-test")
+	authorizeCodexRequest(t, store, req)
 	rec := httptest.NewRecorder()
 
 	g.SetupRoutes().ServeHTTP(rec, req)
@@ -192,7 +192,7 @@ func TestRawResponsesProxySkipsBodiesWhenAccessLogSaveBodiesDisabled(t *testing.
 
 	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
-	req.Header.Set("Authorization", "Bearer eyJ-test")
+	authorizeCodexRequest(t, store, req)
 	rec := httptest.NewRecorder()
 
 	g.SetupRoutes().ServeHTTP(rec, req)
@@ -254,7 +254,7 @@ func TestRawResponsesProxyRecordsSuccessfulFailoverQuotaInAccessLog(t *testing.T
 
 	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
-	req.Header.Set("Authorization", "Bearer eyJ-test")
+	authorizeCodexRequest(t, store, req)
 	rec := httptest.NewRecorder()
 
 	g.SetupRoutes().ServeHTTP(rec, req)
@@ -317,7 +317,7 @@ func TestRawResponsesProxyKeepsFailedAttemptQuotaWhenSuccessfulFailoverHasNoQuot
 
 	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
-	req.Header.Set("Authorization", "Bearer eyJ-test")
+	authorizeCodexRequest(t, store, req)
 	rec := httptest.NewRecorder()
 
 	g.SetupRoutes().ServeHTTP(rec, req)
@@ -369,6 +369,16 @@ func createRawProvider(t *testing.T, store *config.Store, p *gatewayRawProvider,
 		t.Fatalf("create provider %s: %v", p.name, err)
 	}
 	p.id = stored.ID
+}
+
+func authorizeCodexRequest(t *testing.T, store *config.Store, req *http.Request) {
+	t.Helper()
+	key, err := store.CreateAPIKey("test-client")
+	if err != nil {
+		t.Fatalf("create client api key: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key.Key)
+	req.Header.Set("User-Agent", "codex_cli_rs/0.130.0")
 }
 
 func assertQuotaUsed(t *testing.T, raw string, want float64) {

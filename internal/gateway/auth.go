@@ -32,44 +32,28 @@ func apiKeyFromContext(ctx context.Context) *config.APIKey {
 	return nil
 }
 
-// apiKeyAuth 中间件：对 AI API 端点的可选 Bearer 鉴权
-// 无 Authorization header 时放行（向后兼容），有则验证
+// apiKeyAuth 中间件：所有 AI API 端点必须使用本地 API Key 鉴权。
 func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := extractBearerToken(r)
-		if key == "" {
-			w.Header().Set("X-Api-Key-Auth", "missing")
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if strings.HasPrefix(key, "eyJ") {
-			w.Header().Set("X-Api-Key-Auth", "jwt-passthrough")
-			ua := r.Header.Get("User-Agent")
-			if m := reCodexVersion.FindStringSubmatch(ua); len(m) > 1 {
-				_ = g.store.SetSetting("codex_cli_version", m[1])
-				r = r.WithContext(models.WithCodexVersion(r.Context(), m[1]))
-			}
-			r = r.WithContext(models.WithRawProxy(r.Context()))
-			slog.Info("jwt_raw_proxy_enabled", "remote", r.RemoteAddr)
-			next.ServeHTTP(w, r)
+		key, authState := extractBearerToken(r)
+		if authState != "present" {
+			writeAPIKeyAuthError(w, authState, "missing or invalid api key")
 			return
 		}
 
 		apiKey, err := g.store.ValidateAPIKey(key)
 		if err != nil {
 			slog.Warn("invalid api key", "remote", r.RemoteAddr, "token_prefix", key[:min(8, len(key))])
-			w.Header().Set("X-Api-Key-Auth", "invalid")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": "invalid api key",
-			})
+			writeAPIKeyAuthError(w, "invalid", "invalid api key")
 			return
 		}
 
 		w.Header().Set("X-Api-Key-Auth", "valid")
 		ctx := withApiKey(r.Context(), apiKey)
+		if m := reCodexVersion.FindStringSubmatch(r.Header.Get("User-Agent")); len(m) > 1 {
+			_ = g.store.SetSetting("codex_cli_version", m[1])
+			ctx = models.WithCodexVersion(ctx, m[1])
+		}
 
 		// 将 API Key 限制注入 context，供路由层检查
 		perms := apiKey.ParsePermissions()
@@ -84,15 +68,28 @@ func (g *Gateway) apiKeyAuth(next http.Handler) http.Handler {
 	})
 }
 
-func extractBearerToken(r *http.Request) string {
+func extractBearerToken(r *http.Request) (string, string) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return ""
+		return "", "missing"
 	}
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return ""
+		return "", "malformed"
 	}
-	return strings.TrimPrefix(auth, "Bearer ")
+	key := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if key == "" {
+		return "", "empty"
+	}
+	return key, "present"
+}
+
+func writeAPIKeyAuthError(w http.ResponseWriter, authState, message string) {
+	w.Header().Set("X-Api-Key-Auth", authState)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
 }
 
 // checkModelAllowed checks if the model is permitted by the API key in context.

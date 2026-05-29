@@ -27,7 +27,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		c.SetClientBody(string(bodyBytes))
 	}
 
-	if models.RawProxyFromContext(r.Context()) {
+	if shouldUseRawResponsesProxy(r) {
 		g.handleRawResponsesProxy(w, r, bodyBytes)
 		return
 	}
@@ -82,6 +82,10 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	resp := translate.ResponsesResponseFromUnified(result.Response)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func shouldUseRawResponsesProxy(r *http.Request) bool {
+	return r.URL.Path == "/v1/responses" && models.CodexVersionFromContext(r.Context()) != ""
 }
 
 type streamState struct {
