@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Table, Button, Modal, Form, Input, InputNumber, message, Tag } from 'antd'
+import { Table, Button, Modal, Form, Input, InputNumber, message, Tag, Switch } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
 import { fetchConfig, updateConfigSetting } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import type { ConfigEntry } from '../api/types'
 
-const SETTINGS_META: Record<string, { type: ConfigEntry['type']; description: string; editable: boolean }> = {
+const SETTINGS_META: Record<string, { type: ConfigEntry['type']; description: string; editable: boolean; defaultValue?: string }> = {
   schema_version: {
     type: 'string',
     description: '数据库 schema 版本（由迁移系统自动管理）',
@@ -26,6 +26,12 @@ const SETTINGS_META: Record<string, { type: ConfigEntry['type']; description: st
     description: '故障转移冷却时间增长基数（秒），0 表示不增长',
     editable: true,
   },
+  access_log_save_bodies: {
+    type: 'boolean',
+    description: '是否保存访问日志中的请求体和响应体，关闭后新日志不保存 client/upstream body',
+    editable: true,
+    defaultValue: 'true',
+  },
 }
 
 export default function Config() {
@@ -43,7 +49,7 @@ export default function Config() {
       const data = await fetchConfig()
       const merged: ConfigEntry[] = Object.entries(SETTINGS_META).map(([key, meta]) => ({
         key,
-        value: data[key] ?? '',
+        value: data[key] ?? meta.defaultValue ?? '',
         ...meta,
       }))
       setConfig(merged)
@@ -60,7 +66,12 @@ export default function Config() {
 
   const openEdit = (entry: ConfigEntry) => {
     setEditingEntry(entry)
-    form.setFieldsValue({ value: entry.type === 'number' ? Number(entry.value) || 0 : entry.value })
+    const value = entry.type === 'number'
+      ? Number(entry.value) || 0
+      : entry.type === 'boolean'
+        ? entry.value !== 'false'
+        : entry.value
+    form.setFieldsValue({ value })
     setModalOpen(true)
   }
 
@@ -93,6 +104,9 @@ export default function Config() {
         if (r.type === 'json') {
           const display = v.length > 60 ? v.substring(0, 60) + '...' : v
           return <Tag>{display}</Tag>
+        }
+        if (r.type === 'boolean') {
+          return <Tag color={v === 'false' ? 'red' : 'green'}>{v === 'false' ? 'false' : 'true'}</Tag>
         }
         return <span>{v}</span>
       },
@@ -127,6 +141,8 @@ export default function Config() {
     switch (editingEntry.type) {
       case 'number':
         return <InputNumber style={{ width: '100%' }} min={0} />
+      case 'boolean':
+        return <Switch checkedChildren="true" unCheckedChildren="false" />
       case 'json':
         return <Input.TextArea rows={8} />
       default:
@@ -154,7 +170,12 @@ export default function Config() {
           <div style={{ marginBottom: 12, color: '#888' }}>{editingEntry.description}</div>
         )}
         <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
-          <Form.Item name="value" label="值" rules={[{ required: true, message: '请输入值' }]}>
+          <Form.Item
+            name="value"
+            label="值"
+            valuePropName={editingEntry?.type === 'boolean' ? 'checked' : 'value'}
+            rules={[{ required: true, message: '请输入值' }]}
+          >
             {renderInput()}
           </Form.Item>
         </Form>

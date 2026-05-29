@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -54,6 +55,8 @@ import (
 	"github.com/tursom/turapis/internal/config"
 	"github.com/tursom/turapis/internal/models"
 )
+
+const accessLogSaveBodiesSetting = "access_log_save_bodies"
 
 // AccessLogCollector 线程安全的请求元数据收集器
 //
@@ -479,6 +482,7 @@ type responseRecorder struct {
 	statusCode  int
 	wroteHeader bool
 	body        []byte
+	skipBody    bool
 }
 
 // WriteHeader 记录状态码（幂等保护）。
@@ -512,7 +516,9 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 		r.statusCode = http.StatusOK
 		r.wroteHeader = true
 	}
-	r.body = append(r.body, b...)
+	if !r.skipBody {
+		r.body = append(r.body, b...)
+	}
 	return r.ResponseWriter.Write(b)
 }
 
@@ -538,60 +544,80 @@ func (r *responseRecorder) Body() string {
 	return string(r.body)
 }
 
+func (g *Gateway) shouldSaveAccessLogBodies() bool {
+	if g == nil || g.store == nil {
+		return true
+	}
+	value, err := g.store.GetSetting(accessLogSaveBodiesSetting)
+	if err != nil {
+		slog.Warn("access_log_save_bodies_get_setting_failed", "error", err)
+		return true
+	}
+	if value == "" {
+		return true
+	}
+	save, err := strconv.ParseBool(value)
+	if err != nil {
+		slog.Warn("access_log_save_bodies_invalid", "value", value, "error", err)
+		return true
+	}
+	return save
+}
+
 // accessLogMiddleware 记录所有 AI API 请求的访问日志（/v1/models 除外）
 //
 // 中间件处理流程：
 //
-//	1. /v1/models 绕过（bypass）
-//	   /v1/models 是列出可用模型的查询接口，不是 AI 推理请求，日志噪音大且无分析价值。
-//	   直接调用 next.ServeHTTP(w, r) 不经过任何 collector 逻辑。
+//  1. /v1/models 绕过（bypass）
+//     /v1/models 是列出可用模型的查询接口，不是 AI 推理请求，日志噪音大且无分析价值。
+//     直接调用 next.ServeHTTP(w, r) 不经过任何 collector 逻辑。
 //
-//	2. 创建 collector 并注入 context
-//	   每个请求创建独立的 AccessLogCollector 实例（绝不跨请求复用），
-//	   通过 withCollector 注入到请求的 context 链中。
-//	   handler（responses.go, messages.go）通过 collectorFromContext 提取并设置字段。
+//  2. 创建 collector 并注入 context
+//     每个请求创建独立的 AccessLogCollector 实例（绝不跨请求复用），
+//     通过 withCollector 注入到请求的 context 链中。
+//     handler（responses.go, messages.go）通过 collectorFromContext 提取并设置字段。
 //
-//	3. 包装 responseRecorder
-//	   用 responseRecorder 替代原始 ResponseWriter，捕获下游 handler 产生的
-//	   状态码和响应体内容。
+//  3. 包装 responseRecorder
+//     用 responseRecorder 替代原始 ResponseWriter，捕获下游 handler 产生的
+//     状态码和响应体内容。
 //
-//	4. 执行下一个 handler
-//	   next.ServeHTTP(rec, r) → 路由 → handler → provider 调用。
-//	   所有 collector.setter 调用在此期间发生。
+//  4. 执行下一个 handler
+//     next.ServeHTTP(rec, r) → 路由 → handler → provider 调用。
+//     所有 collector.setter 调用在此期间发生。
 //
-//	5. 请求完成后收集字段
-//	   为最小化锁持有时间，将锁内操作限制在一个匿名闭包中（func(){ collector.mu.Lock()... }()）。
-//	   先拷贝所有需要字段的副本，释放锁后再执行后续逻辑（quota 回退解析、JSON 序列化等）。
+//  5. 请求完成后收集字段
+//     为最小化锁持有时间，将锁内操作限制在一个匿名闭包中（func(){ collector.mu.Lock()... }()）。
+//     先拷贝所有需要字段的副本，释放锁后再执行后续逻辑（quota 回退解析、JSON 序列化等）。
 //
-//	6. Quota 回退解析
-//	   调用 quotaFromAttempts 按三级 fallback 解析最终的配额信息。
+//  6. Quota 回退解析
+//     调用 quotaFromAttempts 按三级 fallback 解析最终的配额信息。
 //
-//	7. Attempts JSON 序列化
-//	   如果有 failover 尝试记录（len(attemptsCopy) > 0），序列化为 JSON 字符串。
-//	   空 attempts 时不序列化（attemptsJSON 保持空字符串）。
+//  7. Attempts JSON 序列化
+//     如果有 failover 尝试记录（len(attemptsCopy) > 0），序列化为 JSON 字符串。
+//     空 attempts 时不序列化（attemptsJSON 保持空字符串）。
 //
-//	8. 响应体回退（fallback）
-//	   如果 handler 未通过 SetClientResponse 显式设置 clientResponse（clientResp == ""），
-//	   且状态码正常（< 300），则使用 responseRecorder 捕获的 body 作为响应体。
-//	   排除了错误状态码（>= 300）的原因是：错误响应体通常是网关层生成的简短错误信息，
-//	   不是 AI 模型的推理输出，记录它没有日志分析价值。
+//  8. 响应体回退（fallback）
+//     如果 handler 未通过 SetClientResponse 显式设置 clientResponse（clientResp == ""），
+//     且状态码正常（< 300），则使用 responseRecorder 捕获的 body 作为响应体。
+//     排除了错误状态码（>= 300）的原因是：错误响应体通常是网关层生成的简短错误信息，
+//     不是 AI 模型的推理输出，记录它没有日志分析价值。
 //
-//	9. 组装 AccessLog
-//	   将所有字段组装为 config.AccessLog 结构体，包括：
-//	   - 请求元数据：Timestamp, ApiKeyID, Method, Path, RemoteIP, RequestID
-//	   - AI 推理特征：Model, ProviderName, TokensIn, TokensOut, DurationMs
-//	   - 调试审计：ClientReq, ClientResp, UpstreamReq, UpstreamResp, ErrorMsg
-//	   - Failover：AttemptsJSON
-//	   - 配额：QuotaBefore, QuotaAfter
-//	   RequestID 通过 chimw.GetReqID(r.Context()) 从 chi 中间件获取，
-//	   实现了全链路日志关联。
+//  9. 组装 AccessLog
+//     将所有字段组装为 config.AccessLog 结构体，包括：
+//     - 请求元数据：Timestamp, ApiKeyID, Method, Path, RemoteIP, RequestID
+//     - AI 推理特征：Model, ProviderName, TokensIn, TokensOut, DurationMs
+//     - 调试审计：ClientReq, ClientResp, UpstreamReq, UpstreamResp, ErrorMsg
+//     - Failover：AttemptsJSON
+//     - 配额：QuotaBefore, QuotaAfter
+//     RequestID 通过 chimw.GetReqID(r.Context()) 从 chi 中间件获取，
+//     实现了全链路日志关联。
 //
-//	10. 非阻塞 channel 发送（1ms timeout）
-//	   尝试将 AccessLog 发送到 accessLogWriter.ch。
-//	   如果 1ms 内 channel 没有空闲缓冲区（可能因为 writer goroutine 正在处理
-//	   大量日志或 Pebble 写入卡顿），直接放弃并记录 warn 日志。
-//	   这样确保 HTTP 响应的延迟不受日志写入速度影响，是一种背压保护策略。
-//	   设计考量：访问日志是辅助数据，不应阻塞或延迟主业务流程。
+//  10. 非阻塞 channel 发送（1ms timeout）
+//     尝试将 AccessLog 发送到 accessLogWriter.ch。
+//     如果 1ms 内 channel 没有空闲缓冲区（可能因为 writer goroutine 正在处理
+//     大量日志或 Pebble 写入卡顿），直接放弃并记录 warn 日志。
+//     这样确保 HTTP 响应的延迟不受日志写入速度影响，是一种背压保护策略。
+//     设计考量：访问日志是辅助数据，不应阻塞或延迟主业务流程。
 func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
@@ -600,11 +626,12 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		}
 
 		start := time.Now()
+		saveBodies := g.shouldSaveAccessLogBodies()
 
 		collector := &AccessLogCollector{}
 		r = r.WithContext(withCollector(r.Context(), collector))
 
-		rec := &responseRecorder{ResponseWriter: w}
+		rec := &responseRecorder{ResponseWriter: w, skipBody: !saveBodies}
 
 		next.ServeHTTP(rec, r)
 
@@ -643,6 +670,12 @@ func (g *Gateway) accessLogMiddleware(next http.Handler) http.Handler {
 		// 如果 handler 未显式设置 clientResponse，使用 recorder 捕获的响应体
 		if clientResp == "" && rec.StatusCode() < 300 {
 			clientResp = rec.Body()
+		}
+		if !saveBodies {
+			clientBody = ""
+			clientResp = ""
+			upstreamReq = ""
+			upstreamResp = ""
 		}
 
 		log := config.AccessLog{

@@ -175,8 +175,7 @@ export interface AccessLogStatsResponse {
 export interface ConfigEntry {
   key: string
   value: string
-  type: 'string' | 'number' | 'json'
+  type: 'string' | 'number' | 'json' | 'boolean'
   description: string
   editable: boolean
 }
-

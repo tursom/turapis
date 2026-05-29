@@ -51,6 +51,11 @@ func (a *Admin) updateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "default_priority_chain must be valid JSON")
 			return
 		}
+	case "access_log_save_bodies":
+		if _, err := strconv.ParseBool(body.Value); err != nil {
+			writeError(w, http.StatusBadRequest, "access_log_save_bodies must be a boolean")
+			return
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "unknown setting: "+body.Key)
 		return

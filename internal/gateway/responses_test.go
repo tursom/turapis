@@ -152,6 +152,12 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("model = %q, want gpt-5.4", got.Model)
 	}
+	if got.ClientReq != `{"model":"gpt-5.4","stream":true}` {
+		t.Fatalf("client_req = %q, want original request body", got.ClientReq)
+	}
+	if got.ClientResp != rawBody {
+		t.Fatalf("client_resp = %q, want raw response body", got.ClientResp)
+	}
 	assertQuotaUsed(t, got.QuotaBefore, 11)
 	assertQuotaUsed(t, got.QuotaAfter, 42)
 
@@ -164,6 +170,63 @@ func TestRawResponsesProxyRecordsUsageInAccessLog(t *testing.T) {
 		t.Fatalf("stored quota = %v, want refreshed quota", rawQuota)
 	}
 	assertQuotaUsed(t, string(*rawQuota), 42)
+}
+
+func TestRawResponsesProxySkipsBodiesWhenAccessLogSaveBodiesDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "turapis.db"), filepath.Join(tmp, "logs"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+	if err := store.SetSetting(accessLogSaveBodiesSetting, "false"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	registry := provider.NewRegistry()
+	rawBody := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.4","usage":{"input_tokens":321,"output_tokens":54}}}` + "\n\n"
+	p := &gatewayRawProvider{name: "codex-raw-no-bodies", body: rawBody, header: rawQuotaHeader("42")}
+	createRawProvider(t, store, p, 10, `{"tokens":{"access_token":"test-token","quota":{"primary":{"used_percent":11,"reset_after_seconds":600,"window_minutes":300}}}}`)
+	registry.Register(p)
+
+	g := New(router.New(store, registry), http.NewServeMux(), store, store.LogStore, "", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	req.Header.Set("Authorization", "Bearer eyJ-test")
+	rec := httptest.NewRecorder()
+
+	g.SetupRoutes().ServeHTTP(rec, req)
+	g.accessLogWriter.Shutdown(time.Second)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != rawBody {
+		t.Fatalf("raw response body changed:\ngot  %q\nwant %q", rec.Body.String(), rawBody)
+	}
+
+	logs, total, err := store.QueryAccessLogs(config.AccessLogQuery{Page: 1, PerPage: 10})
+	if err != nil {
+		t.Fatalf("query access logs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("logs total/len = %d/%d, want 1/1", total, len(logs))
+	}
+	got := logs[0]
+	if got.ClientReq != "" || got.ClientResp != "" || got.UpstreamReq != "" || got.UpstreamResp != "" {
+		t.Fatalf("body fields should be empty: client_req=%q client_resp=%q upstream_req=%q upstream_resp=%q", got.ClientReq, got.ClientResp, got.UpstreamReq, got.UpstreamResp)
+	}
+	if got.TokensIn != 321 || got.TokensOut != 54 {
+		t.Fatalf("logged tokens = %d/%d, want 321/54", got.TokensIn, got.TokensOut)
+	}
+	if got.ProviderName != p.name {
+		t.Fatalf("provider = %q, want %q", got.ProviderName, p.name)
+	}
+	if got.Model != "gpt-5.4" {
+		t.Fatalf("model = %q, want gpt-5.4", got.Model)
+	}
+	assertQuotaUsed(t, got.QuotaBefore, 11)
+	assertQuotaUsed(t, got.QuotaAfter, 42)
 }
 
 func TestRawResponsesProxyRecordsSuccessfulFailoverQuotaInAccessLog(t *testing.T) {
